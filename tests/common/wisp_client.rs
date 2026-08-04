@@ -173,7 +173,7 @@ impl WispClient {
     /// Get a raw sender for flood benchmarking
     pub fn into_sender(self) -> flume::Sender<Message> {
         use futures_util::SinkExt;
-        let (ws_write, mut ws_read) = self.ws.split();
+        let (mut ws_write, mut ws_read) = self.ws.split();
         let (tx, rx) = flume::unbounded::<Message>();
 
         // Spawn a writer task
