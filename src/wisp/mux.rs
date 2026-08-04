@@ -48,7 +48,7 @@ impl MuxInner {
         // Split into independent read/write halves
         let (mut ws_write, mut ws_read) = ws.split();
 
-        // Channel for tasks to send WS messages through
+        // Channel for proxy tasks to send WS messages
         let (ws_write_tx, ws_write_rx) = flume::unbounded::<Message>();
         self.ws_write_tx = ws_write_tx;
 
@@ -61,17 +61,13 @@ impl MuxInner {
             }
         });
 
-        // Main read loop — no write contention
+        // Main read loop
         let result = self.read_loop(&mut ws_read).await;
 
-        // Close the channel so the writer task exits
-        // We need to drop all senders. self.ws_write_tx has clones held by
-        // proxy tasks, but they should be done by now (read loop ended = WS closed)
+        // Close channel to signal writer to exit
         drop(std::mem::replace(&mut self.ws_write_tx, flume::unbounded().0));
 
-        // Wait for writer to finish draining
         let _ = writer_handle.await;
-
         result
     }
 
@@ -157,7 +153,6 @@ impl MuxInner {
                     if let Some(motd_text) = motd {
                         tracing::debug!("MOTD: {}", motd_text);
                     }
-                    // Send CONTINUE to signal stream is ready
                     let continue_pkt = Packet::continue_packet(stream_id, 128);
                     let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
                     if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size).await {
@@ -201,12 +196,6 @@ impl MuxInner {
 
     fn send_close(&self, stream_id: StreamId, reason: u8) -> Result<(), WispError> {
         let packet = Packet::close(stream_id, reason);
-        self.ws_write_tx.send(Message::binary(packet.serialize()))
-            .map_err(|_| WispError::ConnectionClosed)
-    }
-
-    fn send_continue(&self, stream_id: StreamId, buffer_remaining: u32) -> Result<(), WispError> {
-        let packet = Packet::continue_packet(stream_id, buffer_remaining);
         self.ws_write_tx.send(Message::binary(packet.serialize()))
             .map_err(|_| WispError::ConnectionClosed)
     }

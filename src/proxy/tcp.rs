@@ -17,7 +17,6 @@ pub async fn proxy_tcp(
     let (tcp_read, mut tcp_write) = tcp_stream.into_split();
     let mut reader = BufReader::with_capacity(buffer_size, tcp_read);
 
-    // Reusable buffer for TCP reads — avoids realloc per read
     let mut buf = BytesMut::with_capacity(128 * 1024);
 
     loop {
