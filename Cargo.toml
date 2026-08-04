@@ -19,6 +19,8 @@ rustc-hash = "2"
 flume = "0.11"
 http = "1"
 futures-util = { version = "0.3", features = ["sink"] }
+async-trait = "0.1"
+ctrlc = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

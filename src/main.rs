@@ -41,12 +41,23 @@ fn multi_thread_main(config: ember::config::Config, workers: usize) {
         .build()
         .expect("failed to create tokio runtime");
 
-    runtime.block_on(ember::server::run(config)).expect("server error");
+    runtime.block_on(async {
+        // Spawn the server
+        let server_handle = tokio::spawn(ember::server::run(config));
+
+        // Wait for shutdown signal
+        wait_for_shutdown().await;
+
+        tracing::info!("Shutdown signal received, draining connections...");
+        server_handle.abort();
+
+        // Give connections time to drain
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tracing::info!("Ember shut down gracefully");
+    });
 }
 
 fn thread_per_core_main(config: ember::config::Config, num_cores: usize) {
-    // Thread-per-core: each core gets its own single-threaded tokio runtime
-    // All bind to the same port with SO_REUSEPORT (Linux only)
     let mut handles = Vec::new();
 
     for i in 0..num_cores {
@@ -59,17 +70,60 @@ fn thread_per_core_main(config: ember::config::Config, num_cores: usize) {
                     .build()
                     .expect("failed to create runtime");
 
-                runtime.block_on(ember::server::run(config)).expect("server error");
+                runtime.block_on(async {
+                    let server_handle = tokio::spawn(ember::server::run(config));
+                    wait_for_shutdown().await;
+                    server_handle.abort();
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                });
             })
             .expect("failed to spawn worker thread");
 
         handles.push(handle);
     }
 
-    tracing::info!("Spawned {} worker threads", num_cores);
+    tracing::info!("Spawned {} worker threads, waiting for shutdown...", num_cores);
 
-    // Wait for all threads (they run until the process is killed)
+    // Wait for shutdown signal on the main thread
+    block_on_shutdown();
+
+    tracing::info!("Shutting down {} worker threads...", num_cores);
     for handle in handles {
-        handle.join().expect("worker thread panicked");
+        let _ = handle.join();
     }
+    tracing::info!("Ember shut down gracefully");
+}
+
+/// Wait for SIGTERM or SIGINT
+async fn wait_for_shutdown() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+
+        tokio::select! {
+            _ = ctrl_c => tracing::info!("Received SIGINT"),
+            _ = sigterm.recv() => tracing::info!("Received SIGTERM"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+        tracing::info!("Received SIGINT");
+    }
+}
+
+/// Block on shutdown signal (for non-async contexts)
+fn block_on_shutdown() {
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    ctrlc::set_handler(move || {
+        tx.send(()).ok();
+    })
+    .expect("failed to set Ctrl-C handler");
+
+    rx.recv().ok();
 }

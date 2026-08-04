@@ -13,14 +13,14 @@ use crate::wisp::handshake::{handshake_v2, perform_v1_init, WispVersion};
 use crate::wisp::mux::MuxInner;
 use crate::wisp::extensions::{Extension, ExtensionNegotiation};
 
-pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = create_listener(&addr).await?;
     run_with_listener(listener, config).await
 }
 
 /// Create a TcpListener with SO_REUSEPORT on Linux (for thread-per-core mode)
-async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::Error>> {
+async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(target_os = "linux")]
     {
         let socket_addr: SocketAddr = addr.parse()?;
@@ -81,7 +81,7 @@ async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::
 pub async fn run_with_listener(
     listener: TcpListener,
     config: Config,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = listener.local_addr()?;
     tracing::info!("Ember listening on {}", addr);
 
@@ -114,7 +114,7 @@ async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
     config: Config,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
 
     let (req, mut ws_stream) = ServerBuilder::new().accept(stream).await?;
