@@ -2,6 +2,9 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd;
+
 use tokio::net::{TcpListener, TcpStream};
 use tokio_websockets::ServerBuilder;
 
@@ -20,26 +23,43 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     {
-        // Use libc for SO_REUSEPORT on Linux to avoid socket2 version conflicts
+        // Create raw socket, set SO_REUSEPORT, then bind
         let socket_addr: SocketAddr = addr.parse()?;
-        let std_listener = std::net::TcpListener::bind(&socket_addr)?;
-        std_listener.set_nonblocking(true)?;
+        let domain = if socket_addr.is_ipv4() { libc::AF_INET } else { libc::AF_INET6 };
 
-        // Set SO_REUSEPORT via libc
         unsafe {
-            let fd = std::os::fd::AsRawFd::as_raw_fd(&std_listener);
-            let one: libc::c_int = 1;
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEPORT,
-                &one as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-            );
-        }
+            let fd = libc::socket(domain, libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0);
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
 
-        let listener = TcpListener::from_std(std_listener)?;
-        Ok(listener)
+            // SO_REUSEADDR
+            let one: libc::c_int = 1;
+            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            // SO_REUSEPORT
+            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+
+            // Bind
+            let (addr_ptr, addr_len) = match socket_addr {
+                SocketAddr::V4(ref a) => (a as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t),
+                SocketAddr::V6(ref a) => (a as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t),
+            };
+            if libc::bind(fd, addr_ptr, addr_len) < 0 {
+                let err = std::io::Error::last_os_error();
+                libc::close(fd);
+                return Err(err.into());
+            }
+            if libc::listen(fd, 64) < 0 {
+                let err = std::io::Error::last_os_error();
+                libc::close(fd);
+                return Err(err.into());
+            }
+
+            // Convert to std TcpListener (takes ownership of fd)
+            let std_listener = std::net::TcpListener::from_raw_fd(fd);
+            let listener = TcpListener::from_std(std_listener)?;
+            Ok(listener)
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
