@@ -11,6 +11,48 @@ use crate::error::WispError;
 use crate::wisp::packet::Packet;
 use crate::wisp::plugins::Metrics;
 
+/// Optimize TCP socket for high-throughput proxying
+fn optimize_tcp_socket(stream: &TcpStream) {
+    stream.set_nodelay(true).ok();
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            let fd = stream.as_raw_fd();
+
+            // Enable TCP keepalive
+            let one: libc::c_int = 1;
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_KEEPALIVE,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+
+            // Set larger send buffer (256KB)
+            let buf_size: libc::c_int = 256 * 1024;
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+
+            // Set larger receive buffer (256KB)
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+        }
+    }
+}
+
 pub async fn proxy_tcp(
     stream_id: u32,
     tcp_stream: TcpStream,
@@ -19,6 +61,9 @@ pub async fn proxy_tcp(
     buffer_size: usize,
     metrics: Option<Arc<Metrics>>,
 ) -> Result<(), WispError> {
+    // Optimize the upstream TCP socket
+    optimize_tcp_socket(&tcp_stream);
+
     let (tcp_read, mut tcp_write) = tcp_stream.into_split();
     let mut reader = BufReader::with_capacity(buffer_size, tcp_read);
 
@@ -66,6 +111,6 @@ pub async fn proxy_tcp(
 pub async fn proxy_tcp_connect(host: String, port: u16) -> Result<TcpStream, WispError> {
     let addr = format!("{}:{}", host, port);
     let stream = TcpStream::connect(&addr).await?;
-    stream.set_nodelay(true)?;
+    optimize_tcp_socket(&stream);
     Ok(stream)
 }

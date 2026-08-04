@@ -56,6 +56,7 @@ fn multi_thread_main(config: ember::config::Config, config_path: Option<String>,
         wait_for_shutdown().await;
 
         tracing::info!("Shutdown signal received, draining connections...");
+        ember::server::IS_SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
         server_handle.abort();
 
         // Give connections time to drain
@@ -80,6 +81,7 @@ fn thread_per_core_main(config: ember::config::Config, config_path: Option<Strin
                 runtime.block_on(async {
                     let server_handle = tokio::spawn(ember::server::run(config));
                     wait_for_shutdown().await;
+                    ember::server::IS_SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
                     server_handle.abort();
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 });

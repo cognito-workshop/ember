@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+
+pub static IS_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd;
@@ -228,6 +230,39 @@ async fn run_metrics_server(
             };
 
             let request = String::from_utf8_lossy(&buf[..n]);
+
+            if request.starts_with("GET /health") || request.starts_with("GET /health ") {
+                let body = r#"{"status":"ok"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
+            }
+
+            if request.starts_with("GET /ready") || request.starts_with("GET /ready ") {
+                if IS_SHUTTING_DOWN.load(Ordering::Relaxed) {
+                    let body = r#"{"status":"shutting_down"}"#;
+                    let response = format!(
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                } else {
+                    let body = r#"{"status":"ready"}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+                return;
+            }
+
             let is_metrics_request = request.starts_with("GET /metrics")
                 || request.starts_with("GET /metrics ");
 

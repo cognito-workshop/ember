@@ -171,6 +171,15 @@ impl MuxInner {
             return Err(WispError::WebSocket(reason));
         }
 
+        tracing::info!(
+            addr = %self.peer_addr,
+            stream_id = packet.stream_id,
+            hostname = %hostname,
+            port = port,
+            stream_type = if stream_type == 0x01 { "TCP" } else { "UDP" },
+            "stream opened"
+        );
+
         let (data_tx, data_rx) = flume::bounded(self.buffer_config.initial_size as usize);
         let buffer = AdaptiveBuffer::new(self.buffer_config.clone());
 
@@ -250,14 +259,18 @@ impl MuxInner {
     fn handle_close(&mut self, stream_id: StreamId) {
         self.streams.remove(&stream_id);
 
+        tracing::info!(
+            addr = %self.peer_addr,
+            stream_id = stream_id,
+            "stream closed"
+        );
+
         // Notify plugins: stream close
         let plugins = self.plugins.clone();
         let stream_id_copy = stream_id;
         tokio::spawn(async move {
             let _ = plugins.notify(&PluginEvent::StreamClose { stream_id: stream_id_copy }).await;
         });
-
-        tracing::trace!("stream {} closed", stream_id);
     }
 
     fn send_close(&self, stream_id: StreamId, reason: u8) -> Result<(), WispError> {
