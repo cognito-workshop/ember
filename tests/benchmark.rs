@@ -26,84 +26,96 @@ fn test_config() -> Config {
     }
 }
 
-/// Benchmark: measure throughput with 1 stream, sending 50KB payloads
+// === FLOOD BENCHMARKS (match WispMark methodology) ===
+// Sends as fast as possible, measures total bytes over time
+
 #[tokio::test]
-async fn benchmark_throughput_1_stream() {
-    run_throughput_bench(1, 10).await;
+async fn flood_1x10() {
+    run_flood_bench(1, 10, 3).await;
 }
 
-/// Benchmark: measure throughput with 10 streams
 #[tokio::test]
-async fn benchmark_throughput_10_streams() {
-    run_throughput_bench(10, 5).await;
+async fn flood_5x10() {
+    run_flood_bench(5, 10, 3).await;
 }
 
-async fn run_throughput_bench(num_streams: usize, iterations: usize) {
+async fn run_flood_bench(num_connections: usize, streams_per_conn: usize, duration_secs: u64) {
     let echo_addr = start_echo_server().await;
     let server_addr = start_ember_server(test_config()).await;
 
-    let mut client = WispClient::connect_v1(server_addr).await.unwrap();
-    let init = client.recv().await.unwrap(); // v1 init CONTINUE(0)
-    assert_eq!(init.packet_type, PacketType::Continue);
-
-    // Open all streams
-    for i in 1..=num_streams as u32 {
-        let resp = client.open_stream(i, "127.0.0.1", echo_addr.port()).await.unwrap();
-        assert_eq!(resp.packet_type, PacketType::Continue);
-    }
-
     let payload_size = 50 * 1024; // 50KB like WispMark
-    let payload = vec![0x42u8; payload_size];
+    let payload = Bytes::from(vec![0x42u8; payload_size]);
+    let max_buffered = 5 * 1024 * 1024; // 5MB WS buffer limit
 
-    let total_packets = num_streams * iterations;
+    // Track total bytes sent
+    let total_bytes_sent = std::sync::atomic::AtomicU64::new(0);
+    let total_bytes_sent = &total_bytes_sent;
 
-    // Benchmark: send one packet at a time and receive its response
-    // This avoids overwhelming the server with backlogged packets
-    let start = Instant::now();
+    let mut handles = Vec::new();
 
-    let mut sent = 0;
-    let mut received = 0;
+    for conn_id in 0..num_connections {
+        let server_addr = server_addr;
+        let echo_port = echo_addr.port();
+        let payload = payload.clone();
 
-    while received < total_packets {
-        // Send next packet if we haven't sent them all
-        if sent < total_packets {
-            let stream_id = ((sent % num_streams) + 1) as u32;
-            client.send_data(stream_id, Bytes::from(payload.clone())).await.unwrap();
-            sent += 1;
-        }
+        let handle = tokio::spawn(async move {
+            let mut client = WispClient::connect_v1(server_addr).await.unwrap();
+            let _ = client.recv().await.unwrap(); // v1 init
 
-        // Try to receive (with timeout)
-        match tokio::time::timeout(std::time::Duration::from_secs(5), client.recv()).await {
-            Ok(Ok(pkt)) if pkt.packet_type == PacketType::Data => received += 1,
-            Ok(Ok(_)) => {} // skip CONTINUE
-            Ok(Err(e)) => {
-                eprintln!("recv error: {}", e);
-                break;
+            // Open all streams
+            for i in 1..=streams_per_conn as u32 {
+                let _ = client.open_stream(i, "127.0.0.1", echo_port).await.unwrap();
             }
-            Err(_) => {
-                eprintln!("timeout waiting for packet {}/{}", received, total_packets);
-                break;
+
+            // Flood: send packets as fast as possible for duration_secs
+            let deadline = Instant::now() + std::time::Duration::from_secs(duration_secs);
+            let mut sent: u64 = 0;
+
+            while Instant::now() < deadline {
+                for stream_id in 1..=streams_per_conn as u32 {
+                    // Send 10 packets per stream per iteration (like WispMark)
+                    for _ in 0..10 {
+                        client.send_data(stream_id, payload.clone()).await.unwrap();
+                        sent += 1;
+                    }
+                }
+
+                // Yield to let the runtime process outgoing data
+                tokio::task::yield_now().await;
             }
-        }
+
+            total_bytes_sent.fetch_add(sent * payload_size, std::sync::atomic::Ordering::Relaxed);
+
+            // Drain remaining responses
+            let _ = client;
+        });
+
+        handles.push(handle);
     }
 
-    let elapsed = start.elapsed();
-    let total_bytes = (received as u64) * (payload_size as u64);
-    let throughput_mbps = (total_bytes as f64) / elapsed.as_secs_f64() / (1024.0 * 1024.0);
+    // Wait for all senders to finish
+    for h in handles {
+        let _ = h.await;
+    }
+
+    let total = total_bytes_sent.load(std::sync::atomic::Ordering::Relaxed);
+    let elapsed = duration_secs as f64;
+    let throughput = (total as f64) / elapsed / (1024.0 * 1024.0);
 
     println!();
-    println!("=== Throughput Benchmark ===");
-    println!("Streams:            {}", num_streams);
-    println!("Iterations:        {}", iterations);
+    println!("=== Flood Benchmark (WispMark-style) ===");
+    println!("Connections:       {}", num_connections);
+    println!("Streams/conn:      {}", streams_per_conn);
+    println!("Total streams:     {}", num_connections * streams_per_conn);
     println!("Payload size:      {} KB", payload_size / 1024);
-    println!("Total packets:     {}/{}", received, total_packets);
-    println!("Total data:        {:.2} MB", total_bytes as f64 / (1024.0 * 1024.0));
-    println!("Elapsed:           {:.3} ms", elapsed.as_secs_f64() * 1000.0);
-    println!("Throughput:        {:.2} MiB/s", throughput_mbps);
+    println!("Duration:          {}s", duration_secs);
+    println!("Total sent:        {:.2} MB", total as f64 / (1024.0 * 1024.0));
+    println!("Throughput:        {:.2} MiB/s", throughput);
     println!();
 }
 
-/// Benchmark: measure latency of single round-trip
+// === LATENCY BENCHMARK ===
+
 #[tokio::test]
 async fn benchmark_latency() {
     let echo_addr = start_echo_server().await;
