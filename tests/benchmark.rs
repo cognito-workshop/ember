@@ -84,7 +84,7 @@ async fn run_flood_bench(num_connections: usize, streams_per_conn: usize, durati
                 tokio::task::yield_now().await;
             }
 
-            total_bytes_sent.fetch_add(sent * payload_size, std::sync::atomic::Ordering::Relaxed);
+            total_bytes_sent.fetch_add(sent * payload_size as u64, std::sync::atomic::Ordering::Relaxed);
 
             // Drain remaining responses
             let _ = client;
