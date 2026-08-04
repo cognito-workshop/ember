@@ -14,6 +14,7 @@ use crate::wisp::buffer::{AdaptiveBuffer, BufferConfig};
 use crate::wisp::extensions::ExtensionNegotiation;
 use crate::wisp::packet::{Packet, PacketType, StreamId};
 use crate::wisp::plugin::{PluginEvent, PluginManager};
+use crate::wisp::plugins::Metrics;
 
 pub struct StreamEntry {
     pub sender: flume::Sender<Bytes>,
@@ -29,6 +30,7 @@ pub struct MuxInner {
     tcp_read_size: usize,
     plugins: Arc<PluginManager>,
     peer_addr: SocketAddr,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl MuxInner {
@@ -39,6 +41,7 @@ impl MuxInner {
         tcp_read_size: usize,
         plugins: Arc<PluginManager>,
         peer_addr: SocketAddr,
+        metrics: Option<Arc<Metrics>>,
     ) -> Self {
         let (ws_write_tx, _) = flume::unbounded();
 
@@ -51,6 +54,7 @@ impl MuxInner {
             tcp_read_size,
             plugins,
             peer_addr,
+            metrics,
         }
     }
 
@@ -178,6 +182,7 @@ impl MuxInner {
         let ws_write_tx = self.ws_write_tx.clone();
         let tcp_read_size = self.tcp_read_size;
         let motd = self.motd.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             match proxy_tcp_connect(hostname, port).await {
@@ -187,7 +192,7 @@ impl MuxInner {
                     }
                     let continue_pkt = Packet::continue_packet(stream_id, 128);
                     let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                    if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size).await {
+                    if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
                         tracing::trace!("proxy error for stream {}: {}", stream_id, e);
                     }
                 }

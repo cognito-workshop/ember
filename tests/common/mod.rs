@@ -44,6 +44,7 @@ pub async fn start_ember_server(config: ember::config::Config) -> SocketAddr {
             host: "127.0.0.1".to_string(),
             port: listen_addr.port(),
             max_connections: 10000,
+            metrics_port: 0,
         },
         ..config
     };

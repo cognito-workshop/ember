@@ -14,6 +14,7 @@ fn test_config() -> Config {
             host: "127.0.0.1".to_string(),
             port: 0,
             max_connections: 10000,
+            metrics_port: 0,
         },
         tls: TlsConfig::default(),
         buffer: BufferConfig::default(),

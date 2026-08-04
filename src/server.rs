@@ -5,6 +5,7 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_websockets::ServerBuilder;
 
@@ -13,7 +14,7 @@ use crate::wisp::handshake::{handshake_v2, perform_v1_init, WispVersion};
 use crate::wisp::mux::MuxInner;
 use crate::wisp::extensions::{Extension, ExtensionNegotiation};
 use crate::wisp::plugin::PluginManager;
-use crate::wisp::plugins::{RateLimiter, ConnectionLimiter, Logger};
+use crate::wisp::plugins::{Metrics, RateLimiter, ConnectionLimiter, Logger};
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -86,6 +87,20 @@ pub async fn run_with_listener(
     let addr = listener.local_addr()?;
     tracing::info!("Ember listening on {}", addr);
 
+    // Create shared metrics
+    let metrics = Metrics::new();
+
+    // Spawn metrics HTTP endpoint
+    {
+        let metrics = metrics.clone();
+        let metrics_addr = format!("{}:{}", config.server.host, config.server.metrics_port);
+        tokio::spawn(async move {
+            if let Err(e) = run_metrics_server(&metrics_addr, metrics).await {
+                tracing::error!("Metrics server error: {}", e);
+            }
+        });
+    }
+
     // Create shared plugin manager
     let mut pm = PluginManager::new();
 
@@ -117,9 +132,10 @@ pub async fn run_with_listener(
         let config = config.clone();
         let count = connection_count.clone();
         let plugins = plugins.clone();
+        let metrics = metrics.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config, plugins).await {
+            if let Err(e) = handle_connection(stream, addr, config, plugins, metrics).await {
                 tracing::error!("Connection error from {}: {}", addr, e);
             }
             count.fetch_sub(1, Ordering::Relaxed);
@@ -132,6 +148,7 @@ async fn handle_connection(
     addr: SocketAddr,
     config: Config,
     plugins: Arc<PluginManager>,
+    metrics: Arc<Metrics>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
 
@@ -185,8 +202,75 @@ async fn handle_connection(
         config.buffer.tcp_read_size,
         plugins,
         addr,
+        Some(metrics),
     );
     mux.run(ws_stream).await?;
 
     Ok(())
+}
+
+async fn run_metrics_server(
+    addr: &str,
+    metrics: Arc<Metrics>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = TcpListener::bind(addr).await?;
+    tracing::info!("Metrics server listening on {}", addr);
+
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        let metrics = metrics.clone();
+
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024];
+            let n = match stream.read(&mut buf).await {
+                Ok(n) if n > 0 => n,
+                _ => return,
+            };
+
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let is_metrics_request = request.starts_with("GET /metrics")
+                || request.starts_with("GET /metrics ");
+
+            if !is_metrics_request {
+                let response = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response).await;
+                return;
+            }
+
+            let snap = metrics.snapshot();
+            let body = format!(
+                "# HELP ember_connections_active Active connections\n\
+                 # TYPE ember_connections_active gauge\n\
+                 ember_connections_active {val}\n\
+                 # HELP ember_connections_total Total connections accepted\n\
+                 # TYPE ember_connections_total counter\n\
+                 ember_connections_total {total}\n\
+                 # HELP ember_streams_active Active streams\n\
+                 # TYPE ember_streams_active gauge\n\
+                 ember_streams_active {s_active}\n\
+                 # HELP ember_streams_total Total streams opened\n\
+                 # TYPE ember_streams_total counter\n\
+                 ember_streams_total {s_total}\n\
+                 # HELP ember_bytes_received_total Total bytes received from clients\n\
+                 # TYPE ember_bytes_received_total counter\n\
+                 ember_bytes_received_total {b_in}\n\
+                 # HELP ember_bytes_sent_total Total bytes sent to clients\n\
+                 # TYPE ember_bytes_sent_total counter\n\
+                 ember_bytes_sent_total {b_out}\n",
+                val = snap.connections_active,
+                total = snap.connections_total,
+                s_active = snap.streams_active,
+                s_total = snap.streams_total,
+                b_in = snap.bytes_in,
+                b_out = snap.bytes_out,
+            );
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+    }
 }

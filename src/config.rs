@@ -40,6 +40,8 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+    #[serde(default = "default_metrics_port")]
+    pub metrics_port: u16,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -129,6 +131,9 @@ fn default_port() -> u16 {
 fn default_max_connections() -> u32 {
     10000
 }
+fn default_metrics_port() -> u16 {
+    9090
+}
 fn default_buffer_initial() -> u32 {
     128
 }
@@ -182,6 +187,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             max_connections: default_max_connections(),
+            metrics_port: default_metrics_port(),
         }
     }
 }
@@ -249,6 +255,17 @@ impl From<BufferConfig> for RuntimeBufferConfig {
 }
 
 impl Config {
+    pub fn load_from_path(path: &str) -> Result<Self, WispError> {
+        let contents = std::fs::read_to_string(Path::new(path)).map_err(|e| {
+            WispError::Config(format!("failed to read config file '{}': {}", path, e))
+        })?;
+        let config: Config = toml::from_str(&contents).map_err(|e| {
+            WispError::Config(format!("failed to parse config file '{}': {}", path, e))
+        })?;
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn load(cli: &Cli) -> Result<Self, WispError> {
         let mut config = Config::default();
 
