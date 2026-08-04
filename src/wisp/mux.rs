@@ -10,6 +10,7 @@ use tokio_websockets::{Message, WebSocketStream};
 
 use crate::error::WispError;
 use crate::proxy::tcp::{proxy_tcp, proxy_tcp_connect};
+use crate::proxy::udp::proxy_udp;
 use crate::wisp::buffer::{AdaptiveBuffer, BufferConfig};
 use crate::wisp::extensions::ExtensionNegotiation;
 use crate::wisp::packet::{Packet, PacketType, StreamId};
@@ -184,30 +185,50 @@ impl MuxInner {
         let motd = self.motd.clone();
         let metrics = self.metrics.clone();
 
-        tokio::spawn(async move {
-            match proxy_tcp_connect(hostname, port).await {
-                Ok(tcp_stream) => {
-                    if let Some(motd_text) = motd {
-                        tracing::debug!("MOTD: {}", motd_text);
+        if stream_type == 0x02 {
+            // UDP proxy
+            let upstream_addr = format!("{}:{}", hostname, port);
+            tokio::spawn(async move {
+                let addr: std::net::SocketAddr = match upstream_addr.parse() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::error!("Invalid UDP address {}: {}", upstream_addr, e);
+                        let packet = Packet::close(stream_id, 0x41);
+                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                        return;
                     }
-                    let continue_pkt = Packet::continue_packet(stream_id, 128);
-                    let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                    if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
-                        tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                };
+                if let Err(e) = proxy_udp(stream_id, addr, data_rx, ws_write_tx).await {
+                    tracing::trace!("UDP proxy error for stream {}: {}", stream_id, e);
+                }
+            });
+        } else {
+            // TCP proxy
+            tokio::spawn(async move {
+                match proxy_tcp_connect(hostname, port).await {
+                    Ok(tcp_stream) => {
+                        if let Some(motd_text) = motd {
+                            tracing::debug!("MOTD: {}", motd_text);
+                        }
+                        let continue_pkt = Packet::continue_packet(stream_id, 128);
+                        let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
+                        if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
+                            tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("TCP connect failed for stream {}: {}", stream_id, e);
+                        let reason = match e {
+                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                            WispError::Io(_) => 0x42,
+                            _ => 0x41,
+                        };
+                        let packet = Packet::close(stream_id, reason);
+                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
                     }
                 }
-                Err(e) => {
-                    tracing::error!("TCP connect failed for stream {}: {}", stream_id, e);
-                    let reason = match e {
-                        WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
-                        WispError::Io(_) => 0x42,
-                        _ => 0x41,
-                    };
-                    let packet = Packet::close(stream_id, reason);
-                    let _ = ws_write_tx.send(Message::binary(packet.serialize()));
-                }
-            }
-        });
+            });
+        }
 
         Ok(())
     }
