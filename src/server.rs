@@ -23,7 +23,6 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     {
-        // Create raw socket, set SO_REUSEPORT, then bind
         let socket_addr: SocketAddr = addr.parse()?;
         let domain = if socket_addr.is_ipv4() { libc::AF_INET } else { libc::AF_INET6 };
 
@@ -33,17 +32,29 @@ async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::
                 return Err(std::io::Error::last_os_error().into());
             }
 
-            // SO_REUSEADDR
             let one: libc::c_int = 1;
             libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-            // SO_REUSEPORT
             libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
 
-            // Bind
+            // Convert SocketAddr to sockaddrStorage for safe casting
+            let mut storage: libc::sockaddr_storage = std::mem::zeroed();
             let (addr_ptr, addr_len) = match socket_addr {
-                SocketAddr::V4(ref a) => (a as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t),
-                SocketAddr::V6(ref a) => (a as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t),
+                SocketAddr::V4(ref a) => {
+                    let sin = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
+                    sin.sin_family = libc::AF_INET as libc::sa_family_t;
+                    sin.sin_port = a.port().to_be();
+                    sin.sin_addr.s_addr = u32::from_ne_bytes(a.ip().octets());
+                    (&storage as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
+                }
+                SocketAddr::V6(ref a) => {
+                    let sin6 = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
+                    sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                    sin6.sin6_port = a.port().to_be();
+                    sin6.sin6_addr.s6_addr = a.ip().octets();
+                    (&storage as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
+                }
             };
+
             if libc::bind(fd, addr_ptr, addr_len) < 0 {
                 let err = std::io::Error::last_os_error();
                 libc::close(fd);
@@ -55,7 +66,6 @@ async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::
                 return Err(err.into());
             }
 
-            // Convert to std TcpListener (takes ownership of fd)
             let std_listener = std::net::TcpListener::from_raw_fd(fd);
             let listener = TcpListener::from_std(std_listener)?;
             Ok(listener)
