@@ -157,6 +157,40 @@ impl WispClient {
         self.send(&packet).await
     }
 
+    /// Split into read/write halves for parallel flood sending
+    pub fn split(self) -> (
+        flume::Sender<Message>,
+        flume::Receiver<Message>,
+        futures_util::stream::SplitSink<WebSocketStream<tokio_websockets::MaybeTlsStream<TcpStream>>, Message>,
+        futures_util::stream::SplitStream<WebSocketStream<tokio_websockets::MaybeTlsStream<TcpStream>>>,
+    ) {
+        use futures_util::SinkExt;
+        let (ws_write, ws_read) = self.ws.split();
+        let (send_tx, send_rx) = flume::unbounded();
+        (send_tx, send_rx, ws_write, ws_read)
+    }
+
+    /// Get a raw sender for flood benchmarking
+    pub fn into_sender(self) -> flume::Sender<Message> {
+        use futures_util::SinkExt;
+        let (ws_write, mut ws_read) = self.ws.split();
+        let (tx, rx) = flume::unbounded::<Message>();
+
+        // Spawn a writer task
+        tokio::spawn(async move {
+            while let Ok(msg) = rx.recv_async().await {
+                if ws_write.send(msg).await.is_err() { break; }
+            }
+        });
+
+        // Spawn a reader task (just drain)
+        tokio::spawn(async move {
+            while let Some(_) = ws_read.next().await {}
+        });
+
+        tx
+    }
+
     /// Send CLOSE packet
     pub async fn close_stream(&mut self, stream_id: u32, reason: u8) -> Result<(), String> {
         let packet = Packet::close(stream_id, reason);

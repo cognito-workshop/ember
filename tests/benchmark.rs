@@ -62,20 +62,38 @@ async fn run_flood_bench(num_connections: usize, streams_per_conn: usize, durati
                 let _ = client.open_stream(i, "127.0.0.1", echo_port).await.unwrap();
             }
 
-            let deadline = Instant::now() + std::time::Duration::from_secs(duration_secs);
-            let mut sent: u64 = 0;
+            // Split client for parallel sending
+            let ws_tx = client.into_sender();
 
-            while Instant::now() < deadline {
-                for stream_id in 1..=streams_per_conn as u32 {
-                    for _ in 0..10 {
-                        client.send_data(stream_id, payload.clone()).await.unwrap();
-                        sent += 1;
+            // Spawn parallel sender tasks per stream (like WispMark's setInterval)
+            let deadline = Instant::now() + std::time::Duration::from_secs(duration_secs);
+            let mut stream_handles = Vec::new();
+
+            for stream_id in 1..=streams_per_conn as u32 {
+                let payload = payload.clone();
+                let ws_tx = ws_tx.clone();
+
+                let h = tokio::spawn(async move {
+                    let mut sent: u64 = 0;
+                    while Instant::now() < deadline {
+                        for _ in 0..10 {
+                            let packet = crate::common::wisp_client::Packet::data(stream_id, payload.clone());
+                            let msg = tokio_websockets::Message::binary(packet.serialize());
+                            if ws_tx.send(msg).is_err() { break; }
+                            sent += 1;
+                        }
+                        tokio::task::yield_now().await;
                     }
-                }
-                tokio::task::yield_now().await;
+                    sent
+                });
+                stream_handles.push(h);
             }
 
-            total_bytes_sent.fetch_add(sent * payload_size as u64, Ordering::Relaxed);
+            let mut total_sent: u64 = 0;
+            for h in stream_handles {
+                total_sent += h.await.unwrap_or(0);
+            }
+            total_bytes_sent.fetch_add(total_sent * payload_size as u64, Ordering::Relaxed);
             let _ = client;
         });
 
