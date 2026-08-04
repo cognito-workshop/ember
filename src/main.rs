@@ -161,7 +161,7 @@ fn thread_per_core_main(config: ember::config::Config, config_path: Option<Strin
         // Initialize the self-pipe for SIGHUP
         let read_fd = sighup_pipe::init();
         unsafe {
-            libc::signal(libc::SIGHUP, sighup_pipe::handler as libc::sighandler_t);
+            libc::signal(libc::SIGHUP, sighup_pipe::handler as *const () as libc::sighandler_t);
         }
 
         // Spawn a thread that reads SIGHUP from the pipe and reloads config
