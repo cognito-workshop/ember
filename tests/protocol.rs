@@ -26,6 +26,8 @@ fn test_config(port: u16) -> Config {
             max_size_mb: 100,
         },
         plugins: ember::config::PluginsConfig::default(),
+        circuit_breaker: ember::config::CircuitBreakerConfig::default(),
+        pool: ember::config::PoolConfig::default(),
     }
 }
 

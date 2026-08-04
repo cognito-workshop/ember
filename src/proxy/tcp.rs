@@ -8,7 +8,7 @@ use tokio::net::TcpStream;
 use tokio_websockets::Message;
 
 use crate::error::WispError;
-use crate::wisp::packet::{Packet, PacketType};
+use crate::wisp::packet::PacketType;
 use crate::wisp::plugins::Metrics;
 
 /// Optimize TCP socket for high-throughput proxying
@@ -58,7 +58,7 @@ pub async fn proxy_tcp(
     ws_write_tx: Sender<Message>,
     buffer_size: usize,
     metrics: Option<Arc<Metrics>>,
-) -> Result<(), WispError> {
+) -> Result<TcpStream, WispError> {
     optimize_tcp_socket(&tcp_stream);
 
     let (tcp_read, mut tcp_write) = tcp_stream.into_split();
@@ -66,22 +66,22 @@ pub async fn proxy_tcp(
 
     let mut buf = BytesMut::with_capacity(128 * 1024);
 
-    loop {
+    let result: Result<(), WispError> = loop {
         tokio::select! {
             result = reader.read_buf(&mut buf) => {
                 match result {
-                    Ok(0) => break,
+                    Ok(0) => break Ok(()),
                     Ok(n) => {
                         let payload = buf.split().freeze();
                         let msg = make_data_msg(stream_id, payload);
                         if ws_write_tx.send(msg).is_err() {
-                            break;
+                            break Ok(());
                         }
                         if let Some(ref m) = metrics {
                             m.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
                         }
                     }
-                    Err(_) => break,
+                    Err(_) => break Ok(()),
                 }
             }
             result = data_rx.recv_async() => {
@@ -89,19 +89,22 @@ pub async fn proxy_tcp(
                     Ok(data) => {
                         let n = data.len();
                         if tcp_write.write_all(&data).await.is_err() {
-                            break;
+                            break Ok(());
                         }
                         if let Some(ref m) = metrics {
                             m.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
                         }
                     }
-                    Err(_) => break,
+                    Err(_) => break Ok(()),
                 }
             }
         }
-    }
+    };
 
-    Ok(())
+    let tcp_stream = reader.into_inner().reunite(tcp_write)
+        .map_err(|e| WispError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    result?;
+    Ok(tcp_stream)
 }
 
 pub async fn proxy_tcp_connect(host: String, port: u16) -> Result<TcpStream, WispError> {

@@ -7,7 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use rustc_hash::FxHashMap;
 use tokio_websockets::{Message, WebSocketStream};
 
+use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerError};
 use crate::error::WispError;
+use crate::pool::ConnectionPool;
 use crate::proxy::tcp::{proxy_tcp, proxy_tcp_connect};
 use crate::proxy::udp::proxy_udp;
 use crate::wisp::buffer::{AdaptiveBuffer, BufferConfig};
@@ -32,6 +34,8 @@ pub struct MuxInner {
     peer_addr: SocketAddr,
     metrics: Option<Arc<Metrics>>,
     max_streams: u32,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
+    pool: Arc<ConnectionPool>,
 }
 
 impl MuxInner {
@@ -44,6 +48,8 @@ impl MuxInner {
         peer_addr: SocketAddr,
         metrics: Option<Arc<Metrics>>,
         max_streams: u32,
+        circuit_breaker: Option<Arc<CircuitBreaker>>,
+        pool: Arc<ConnectionPool>,
     ) -> Self {
         let (ws_write_tx, _) = flume::unbounded();
 
@@ -58,6 +64,8 @@ impl MuxInner {
             peer_addr,
             metrics,
             max_streams,
+            circuit_breaker,
+            pool,
         }
     }
 
@@ -200,6 +208,9 @@ impl MuxInner {
         let tcp_read_size = self.tcp_read_size;
         let motd = self.motd.clone();
         let metrics = self.metrics.clone();
+        let circuit_breaker = self.circuit_breaker.clone();
+        let pool = self.pool.clone();
+        let target = format!("{}:{}", hostname, port);
 
         if stream_type == 0x02 {
             // UDP
@@ -221,26 +232,55 @@ impl MuxInner {
         } else {
             // TCP
             tokio::spawn(async move {
-                let max_retries = 3;
-                let mut attempts = 0;
-                let tcp_stream = loop {
-                    match crate::proxy::tcp::proxy_tcp_connect(hostname.clone(), port).await {
-                        Ok(stream) => break stream,
-                        Err(e) => {
-                            attempts += 1;
-                            if attempts >= max_retries {
-                                tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
-                                let reason = match e {
-                                    WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
-                                    WispError::Io(_) => 0x42,
-                                    _ => 0x41,
-                                };
-                                let packet = Packet::close(stream_id, reason);
+                let tcp_stream = if let Some(stream) = pool.get(&target).await {
+                    tracing::trace!("pool hit for {}", target);
+                    stream
+                } else {
+                    pool.miss();
+                    if let Some(ref cb) = circuit_breaker {
+                        let hostname = hostname.clone();
+                        let connect_result = cb.call(|| async move {
+                            proxy_tcp_connect(hostname, port)
+                                .await
+                                .map_err(|e| CircuitBreakerError::UpstreamError(e.to_string()))
+                        }).await;
+                        match connect_result {
+                            Ok(stream) => stream,
+                            Err(CircuitBreakerError::CircuitOpen) => {
+                                tracing::warn!("circuit breaker open, rejecting TCP connect for stream {}", stream_id);
+                                let packet = Packet::close(stream_id, 0x44);
                                 let _ = ws_write_tx.send(Message::binary(packet.serialize()));
                                 return;
                             }
-                            tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
-                            tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
+                            Err(CircuitBreakerError::UpstreamError(_)) => {
+                                let packet = Packet::close(stream_id, 0x42);
+                                let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                return;
+                            }
+                        }
+                    } else {
+                        let max_retries = 3;
+                        let mut attempts = 0;
+                        loop {
+                            match proxy_tcp_connect(hostname.clone(), port).await {
+                                Ok(stream) => break stream,
+                                Err(e) => {
+                                    attempts += 1;
+                                    if attempts >= max_retries {
+                                        tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
+                                        let reason = match e {
+                                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                                            WispError::Io(_) => 0x42,
+                                            _ => 0x41,
+                                        };
+                                        let packet = Packet::close(stream_id, reason);
+                                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                        return;
+                                    }
+                                    tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
+                                    tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
+                                }
+                            }
                         }
                     }
                 };
@@ -249,8 +289,15 @@ impl MuxInner {
                 }
                 let continue_pkt = Packet::continue_packet(stream_id, 128);
                 let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                if let Err(e) = crate::proxy::tcp::proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
-                    tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                let result = crate::proxy::tcp::proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await;
+                match result {
+                    Ok(stream) => {
+                        pool.put(&target, stream).await;
+                    }
+                    Err(e) => {
+                        tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                        pool.remove(&target);
+                    }
                 }
             });
         }
@@ -313,6 +360,9 @@ impl MuxInner {
         let tcp_read_size = self.tcp_read_size;
         let motd = self.motd.clone();
         let metrics = self.metrics.clone();
+        let circuit_breaker = self.circuit_breaker.clone();
+        let pool = self.pool.clone();
+        let target = format!("{}:{}", hostname, port);
 
         if stream_type == 0x02 {
             // UDP proxy
@@ -334,26 +384,55 @@ impl MuxInner {
         } else {
             // TCP proxy
             tokio::spawn(async move {
-                let max_retries = 3;
-                let mut attempts = 0;
-                let tcp_stream = loop {
-                    match proxy_tcp_connect(hostname.clone(), port).await {
-                        Ok(stream) => break stream,
-                        Err(e) => {
-                            attempts += 1;
-                            if attempts >= max_retries {
-                                tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
-                                let reason = match e {
-                                    WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
-                                    WispError::Io(_) => 0x42,
-                                    _ => 0x41,
-                                };
-                                let packet = Packet::close(stream_id, reason);
+                let tcp_stream = if let Some(stream) = pool.get(&target).await {
+                    tracing::trace!("pool hit for {}", target);
+                    stream
+                } else {
+                    pool.miss();
+                    if let Some(ref cb) = circuit_breaker {
+                        let hostname = hostname.clone();
+                        let connect_result = cb.call(|| async move {
+                            proxy_tcp_connect(hostname, port)
+                                .await
+                                .map_err(|e| CircuitBreakerError::UpstreamError(e.to_string()))
+                        }).await;
+                        match connect_result {
+                            Ok(stream) => stream,
+                            Err(CircuitBreakerError::CircuitOpen) => {
+                                tracing::warn!("circuit breaker open, rejecting TCP connect for stream {}", stream_id);
+                                let packet = Packet::close(stream_id, 0x44);
                                 let _ = ws_write_tx.send(Message::binary(packet.serialize()));
                                 return;
                             }
-                            tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
-                            tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
+                            Err(CircuitBreakerError::UpstreamError(_)) => {
+                                let packet = Packet::close(stream_id, 0x42);
+                                let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                return;
+                            }
+                        }
+                    } else {
+                        let max_retries = 3;
+                        let mut attempts = 0;
+                        loop {
+                            match proxy_tcp_connect(hostname.clone(), port).await {
+                                Ok(stream) => break stream,
+                                Err(e) => {
+                                    attempts += 1;
+                                    if attempts >= max_retries {
+                                        tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
+                                        let reason = match e {
+                                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                                            WispError::Io(_) => 0x42,
+                                            _ => 0x41,
+                                        };
+                                        let packet = Packet::close(stream_id, reason);
+                                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                        return;
+                                    }
+                                    tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
+                                    tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
+                                }
+                            }
                         }
                     }
                 };
@@ -362,8 +441,15 @@ impl MuxInner {
                 }
                 let continue_pkt = Packet::continue_packet(stream_id, 128);
                 let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
-                    tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                let result = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await;
+                match result {
+                    Ok(stream) => {
+                        pool.put(&target, stream).await;
+                    }
+                    Err(e) => {
+                        tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                        pool.remove(&target);
+                    }
                 }
             });
         }

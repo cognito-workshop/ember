@@ -42,10 +42,56 @@ fn main() {
     if cli.thread_per_core {
         tracing::info!("Ember v{} starting in thread-per-core mode ({} cores)", env!("CARGO_PKG_VERSION"), workers);
         thread_per_core_main(config, config_path, workers);
+    } else if cli.tui {
+        tracing::info!("Ember v{} starting in TUI mode", env!("CARGO_PKG_VERSION"));
+        tui_main(config);
     } else {
         tracing::info!("Ember v{} starting up ({} workers)", env!("CARGO_PKG_VERSION"), workers);
         multi_thread_main(config, config_path, workers);
     }
+}
+
+#[cfg(feature = "tui")]
+fn tui_main(config: ember::config::Config) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .thread_name("ember-worker")
+        .build()
+        .expect("failed to create tokio runtime");
+
+    runtime.block_on(async {
+        let metrics = ember::wisp::plugins::Metrics::new();
+
+        // Spawn the server with shared metrics
+        let server_metrics = metrics.clone();
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            if let Err(e) = ember::server::run_with_metrics(server_config, server_metrics).await {
+                tracing::error!("Server error: {}", e);
+            }
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Run the TUI (blocks until user quits)
+        if let Err(e) = ember::tui::run_tui(metrics, config).await {
+            tracing::error!("TUI error: {}", e);
+        }
+
+        // Shut down server
+        ember::server::IS_SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+        server_handle.abort();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tracing::info!("Ember TUI session ended");
+    });
+}
+
+#[cfg(not(feature = "tui"))]
+fn tui_main(_config: ember::config::Config) {
+    eprintln!("TUI mode requires the 'tui' feature. Rebuild with: cargo build --features tui");
+    std::process::exit(1);
 }
 
 fn multi_thread_main(config: ember::config::Config, config_path: Option<String>, workers: usize) {

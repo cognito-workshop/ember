@@ -11,6 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_websockets::ServerBuilder;
 
+use crate::circuit_breaker::CircuitBreaker;
 use crate::config::Config;
 use crate::tls::load_tls_config;
 use crate::wisp::handshake::{handshake_v2, perform_v1_init, WispVersion};
@@ -18,11 +19,23 @@ use crate::wisp::mux::MuxInner;
 use crate::wisp::extensions::{Extension, ExtensionNegotiation};
 use crate::wisp::plugin::PluginManager;
 use crate::wisp::plugins::{Metrics, RateLimiter, ConnectionLimiter, Logger};
+use crate::pool::ConnectionPool;
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = create_listener(&addr).await?;
     run_with_listener(listener, config).await
+}
+
+/// Run the server with externally-created shared metrics.
+/// Used by TUI mode to share a single Metrics instance.
+pub async fn run_with_metrics(
+    config: Config,
+    metrics: Arc<Metrics>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let addr = format!("{}:{}", config.server.host, config.server.port);
+    let listener = create_listener(&addr).await?;
+    run_with_listener_and_metrics(listener, config, metrics).await
 }
 
 /// Create a TcpListener with SO_REUSEPORT on Linux (for thread-per-core mode)
@@ -87,6 +100,15 @@ pub async fn run_with_listener(
     listener: TcpListener,
     config: Config,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let metrics = Metrics::new();
+    run_with_listener_and_metrics(listener, config, metrics).await
+}
+
+async fn run_with_listener_and_metrics(
+    listener: TcpListener,
+    config: Config,
+    metrics: Arc<Metrics>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = listener.local_addr()?;
     tracing::info!("Ember listening on {}", addr);
 
@@ -97,9 +119,6 @@ pub async fn run_with_listener(
     } else {
         None
     };
-
-    // Create shared metrics
-    let metrics = Metrics::new();
 
     // Spawn metrics HTTP endpoint
     {
@@ -127,6 +146,20 @@ pub async fn run_with_listener(
     let plugins = Arc::new(pm);
     plugins.load_all().await?;
 
+    // Create circuit breaker if enabled
+    let circuit_breaker = if config.circuit_breaker.enabled {
+        Some(CircuitBreaker::new(
+            config.circuit_breaker.failure_threshold,
+            config.circuit_breaker.recovery_timeout_secs,
+            config.circuit_breaker.half_open_max,
+        ))
+    } else {
+        None
+    };
+
+    // Create shared connection pool
+    let pool = ConnectionPool::new(config.pool.max_per_target, config.pool.max_total);
+
     let connection_count = Arc::new(AtomicU32::new(0));
 
     loop {
@@ -145,9 +178,11 @@ pub async fn run_with_listener(
         let plugins = plugins.clone();
         let metrics = metrics.clone();
         let tls_acceptor = tls_acceptor.clone();
+        let circuit_breaker = circuit_breaker.clone();
+        let pool = pool.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config, plugins, metrics, tls_acceptor).await {
+            if let Err(e) = handle_connection(stream, addr, config, plugins, metrics, tls_acceptor, circuit_breaker, pool).await {
                 tracing::error!("Connection error from {}: {}", addr, e);
             }
             count.fetch_sub(1, Ordering::Relaxed);
@@ -162,16 +197,18 @@ async fn handle_connection(
     plugins: Arc<PluginManager>,
     metrics: Arc<Metrics>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
+    pool: Arc<ConnectionPool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
 
     if let Some(acceptor) = tls_acceptor {
         let tls_stream = acceptor.accept(stream).await?;
         let (req, ws_stream) = ServerBuilder::new().accept(tls_stream).await?;
-        handle_websocket(req, ws_stream, addr, config, plugins, metrics).await?;
+        handle_websocket(req, ws_stream, addr, config, plugins, metrics, circuit_breaker, pool).await?;
     } else {
         let (req, ws_stream) = ServerBuilder::new().accept(stream).await?;
-        handle_websocket(req, ws_stream, addr, config, plugins, metrics).await?;
+        handle_websocket(req, ws_stream, addr, config, plugins, metrics, circuit_breaker, pool).await?;
     }
 
     Ok(())
@@ -184,6 +221,8 @@ async fn handle_websocket<S>(
     config: Config,
     plugins: Arc<PluginManager>,
     metrics: Arc<Metrics>,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
+    pool: Arc<ConnectionPool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -239,6 +278,8 @@ where
         addr,
         Some(metrics),
         config.server.max_connections,
+        circuit_breaker,
+        pool,
     );
     mux.run(ws_stream).await?;
 

@@ -14,6 +14,10 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+    #[serde(default)]
+    pub pool: PoolConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -92,6 +96,16 @@ pub struct LoggingConfig {
     pub max_size_mb: u64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct PoolConfig {
+    #[serde(default = "default_pool_max_per_target")]
+    pub max_per_target: usize,
+    #[serde(default = "default_pool_max_total")]
+    pub max_total: usize,
+    #[serde(default = "default_pool_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+}
+
 #[derive(clap::Parser, Debug)]
 #[command(name = "ember", about = "Ember Wisp server")]
 pub struct Cli {
@@ -126,6 +140,10 @@ pub struct Cli {
     /// Use thread-per-core runtime (Linux only, requires SO_REUSEPORT)
     #[arg(long)]
     pub thread_per_core: bool,
+
+    /// Launch interactive TUI dashboard (requires `tui` feature)
+    #[arg(long)]
+    pub tui: bool,
 }
 
 fn default_host() -> String {
@@ -179,6 +197,15 @@ fn default_max_size_mb() -> u64 {
 fn default_max_buffer_bytes() -> usize {
     10 * 1024 * 1024
 }
+fn default_pool_max_per_target() -> usize {
+    16
+}
+fn default_pool_max_total() -> usize {
+    256
+}
+fn default_pool_idle_timeout_secs() -> u64 {
+    60
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -189,6 +216,18 @@ impl Default for Config {
             extensions: ExtensionsConfig::default(),
             logging: LoggingConfig::default(),
             plugins: PluginsConfig::default(),
+            circuit_breaker: CircuitBreakerConfig::default(),
+            pool: PoolConfig::default(),
+        }
+    }
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            max_per_target: default_pool_max_per_target(),
+            max_total: default_pool_max_total(),
+            idle_timeout_secs: default_pool_idle_timeout_secs(),
         }
     }
 }
@@ -234,6 +273,42 @@ impl Default for ExtensionsConfig {
             udp: true,
             motd: default_motd(),
             stream_open_confirmation: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_cb_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_cb_failure_threshold")]
+    pub failure_threshold: u64,
+    #[serde(default = "default_cb_recovery_timeout_secs")]
+    pub recovery_timeout_secs: u64,
+    #[serde(default = "default_cb_half_open_max")]
+    pub half_open_max: u64,
+}
+
+fn default_cb_enabled() -> bool {
+    true
+}
+fn default_cb_failure_threshold() -> u64 {
+    5
+}
+fn default_cb_recovery_timeout_secs() -> u64 {
+    30
+}
+fn default_cb_half_open_max() -> u64 {
+    3
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_cb_enabled(),
+            failure_threshold: default_cb_failure_threshold(),
+            recovery_timeout_secs: default_cb_recovery_timeout_secs(),
+            half_open_max: default_cb_half_open_max(),
         }
     }
 }

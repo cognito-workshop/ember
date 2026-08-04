@@ -17,24 +17,25 @@ pub mod uring {
     ///
     /// This is a simplified version that uses io_uring for the TCP read path.
     /// The WebSocket write path still uses tokio.
-    pub async fn proxy_tcp_uring(
-        stream_id: u32,
-        tcp_stream: TcpStream,
-        data_rx: Receiver<Bytes>,
-        ws_write_tx: flume::Sender<Message>,
-        buffer_size: usize,
-    ) -> Result<(), WispError> {
-        // For now, fall back to standard TCP proxy
-        // Full io_uring integration requires a separate runtime
-        crate::proxy::tcp::proxy_tcp(
-            stream_id,
-            tcp_stream,
-            data_rx,
-            ws_write_tx,
-            buffer_size,
-            None,
-        ).await
-    }
+        pub async fn proxy_tcp_uring(
+            stream_id: u32,
+            tcp_stream: TcpStream,
+            data_rx: Receiver<Bytes>,
+            ws_write_tx: flume::Sender<Message>,
+            buffer_size: usize,
+        ) -> Result<(), WispError> {
+            // For now, fall back to standard TCP proxy
+            // Full io_uring integration requires a separate runtime
+            crate::proxy::tcp::proxy_tcp(
+                stream_id,
+                tcp_stream,
+                data_rx,
+                ws_write_tx,
+                buffer_size,
+                None,
+            ).await?;
+            Ok(())
+        }
 }
 
 /// Fallback when io_uring feature is not enabled
