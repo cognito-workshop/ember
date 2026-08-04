@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use ember::config::Cli;
+use std::sync::Arc;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
