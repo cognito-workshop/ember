@@ -199,7 +199,7 @@ async fn run_udp_flood_bench(num_connections: usize, streams_per_conn: usize, du
             let mut client = WispClient::connect_v1(server_addr).await.unwrap();
             let _ = client.recv().await.unwrap();
 
-            // Open UDP streams
+            // Open UDP streams (no CONTINUE for UDP per spec)
             for i in 1..=streams_per_conn as u32 {
                 let connect = Packet {
                     packet_type: PacketType::Connect,
@@ -213,7 +213,8 @@ async fn run_udp_flood_bench(num_connections: usize, streams_per_conn: usize, du
                     },
                 };
                 client.send(&connect).await.unwrap();
-                let _ = client.recv().await.unwrap(); // CONTINUE
+                // UDP streams don't get CONTINUE - wait briefly for server to set up
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
 
             let ws_tx = client.into_sender();
