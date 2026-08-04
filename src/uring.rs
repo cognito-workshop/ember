@@ -4,7 +4,7 @@
 //! Requires Linux kernel 5.10+ and the `io_uring` feature.
 
 #[cfg(feature = "io_uring")]
-pub mod uring {
+pub mod io_uring_backend {
     use std::os::unix::io::AsRawFd;
     use bytes::{Bytes, BytesMut};
     use flume::Receiver;
@@ -40,7 +40,7 @@ pub mod uring {
 
 /// Fallback when io_uring feature is not enabled
 #[cfg(not(feature = "io_uring"))]
-pub mod uring {
+pub mod io_uring_backend {
     /// No-op: io_uring not enabled
     pub fn is_available() -> bool {
         false

@@ -1,6 +1,3 @@
-use crate::wisp::packet::PacketType;
-use std::fmt;
-
 #[derive(Debug, thiserror::Error)]
 pub enum WispError {
     #[error("IO error: {0}")]

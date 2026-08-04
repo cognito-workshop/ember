@@ -5,7 +5,7 @@ use bytes::Bytes;
 use flume;
 use futures_util::{SinkExt, StreamExt};
 use rustc_hash::FxHashMap;
-use tokio_websockets::{Message, WebSocketStream};
+use tokio_websockets::Message;
 
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerError};
 use crate::error::WispError;
@@ -14,7 +14,7 @@ use crate::proxy::tcp::{proxy_tcp, proxy_tcp_connect};
 use crate::proxy::udp::proxy_udp;
 use crate::wisp::buffer::{AdaptiveBuffer, BufferConfig};
 use crate::wisp::extensions::ExtensionNegotiation;
-use crate::wisp::packet::{Packet, PacketType, StreamId};
+use crate::wisp::packet::{Packet, StreamId};
 use crate::wisp::plugin::{PluginEvent, PluginManager};
 use crate::wisp::plugins::Metrics;
 
@@ -27,6 +27,7 @@ pub struct MuxInner {
     streams: FxHashMap<StreamId, StreamEntry>,
     ws_write_tx: flume::Sender<Message>,
     buffer_config: BufferConfig,
+    #[allow(dead_code)]
     extensions: ExtensionNegotiation,
     motd: Option<String>,
     tcp_read_size: usize,
@@ -39,6 +40,7 @@ pub struct MuxInner {
 }
 
 impl MuxInner {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         buffer_config: BufferConfig,
         extensions: ExtensionNegotiation,
@@ -305,6 +307,7 @@ impl MuxInner {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn handle_connect(&mut self, packet: Packet) -> Result<(), WispError> {
         // Secondary stream count check
         if self.streams.len() as u32 >= self.max_streams {
@@ -457,6 +460,7 @@ impl MuxInner {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn handle_data(&self, packet: Packet) -> Result<(), WispError> {
         let entry = self.streams.get(&packet.stream_id)
             .ok_or(WispError::UnknownStream(packet.stream_id))?;
@@ -467,6 +471,7 @@ impl MuxInner {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn handle_continue(&self, _stream_id: StreamId) -> Result<(), WispError> {
         Ok(())
     }

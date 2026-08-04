@@ -190,6 +190,7 @@ async fn run_with_listener_and_metrics(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
@@ -214,6 +215,7 @@ async fn handle_connection(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_websocket<S>(
     req: http::Request<()>,
     mut ws_stream: tokio_websockets::WebSocketStream<S>,

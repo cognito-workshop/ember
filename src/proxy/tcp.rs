@@ -102,7 +102,7 @@ pub async fn proxy_tcp(
     };
 
     let tcp_stream = reader.into_inner().reunite(tcp_write)
-        .map_err(|e| WispError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        .map_err(|e| WispError::Io(std::io::Error::other(e.to_string())))?;
     result?;
     Ok(tcp_stream)
 }

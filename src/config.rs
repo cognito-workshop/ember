@@ -1,11 +1,10 @@
-use clap::Parser;
 use serde::Deserialize;
 use std::path::Path;
 
 use crate::error::WispError;
 use crate::wisp::buffer::BufferConfig as RuntimeBufferConfig;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub tls: TlsConfig,
@@ -48,7 +47,7 @@ pub struct ServerConfig {
     pub metrics_port: u16,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct TlsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -207,20 +206,7 @@ fn default_pool_idle_timeout_secs() -> u64 {
     60
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            tls: TlsConfig::default(),
-            buffer: BufferConfig::default(),
-            extensions: ExtensionsConfig::default(),
-            logging: LoggingConfig::default(),
-            plugins: PluginsConfig::default(),
-            circuit_breaker: CircuitBreakerConfig::default(),
-            pool: PoolConfig::default(),
-        }
-    }
-}
+
 
 impl Default for PoolConfig {
     fn default() -> Self {
@@ -243,15 +229,7 @@ impl Default for ServerConfig {
     }
 }
 
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: String::new(),
-            key_path: String::new(),
-        }
-    }
-}
+
 
 impl Default for BufferConfig {
     fn default() -> Self {

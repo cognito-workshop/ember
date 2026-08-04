@@ -75,7 +75,7 @@ impl ConnectionPool {
             return;
         }
 
-        let mut entry = self.pools.entry(target.to_string()).or_insert_with(Vec::new);
+        let mut entry = self.pools.entry(target.to_string()).or_default();
         if entry.len() < self.max_per_target {
             entry.push(IdleConnection {
                 stream,
