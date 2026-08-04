@@ -1,6 +1,6 @@
 mod common;
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use common::wisp_client::{Packet, PacketType, WispClient};
 use common::{start_echo_server, start_ember_server};
 use ember::config::{BufferConfig, Config, ExtensionsConfig, LoggingConfig, ServerConfig, TlsConfig};
@@ -180,4 +180,84 @@ async fn test_packet_invalid_type() {
     let data = Bytes::from(vec![0xFF, 0x00, 0x00, 0x00, 0x00]);
     let result = Packet::parse(data);
     assert!(result.is_err());
+}
+
+// === UDP PROXY TESTS ===
+
+#[tokio::test]
+async fn test_udp_connect_and_echo() {
+    let udp_addr = common::start_udp_echo_server().await;
+    let server_addr = start_ember_server(test_config(0)).await;
+
+    let mut client = WispClient::connect_v1(server_addr).await.unwrap();
+    let _ = client.recv().await.unwrap(); // v1 init
+
+    // Open a UDP stream (stream_type = 0x02)
+    let connect = Packet {
+        packet_type: PacketType::Connect,
+        stream_id: 1,
+        payload: {
+            let mut p = BytesMut::new();
+            p.put_u8(0x02); // UDP
+            p.put_u16_le(udp_addr.port());
+            p.put_slice(b"127.0.0.1");
+            p.freeze()
+        },
+    };
+    client.send(&connect).await.unwrap();
+
+    // UDP streams don't get CONTINUE packets (no flow control per spec)
+    // Give the server a moment to set up the UDP socket
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Send UDP data through the Wisp stream
+    let test_data = b"hello UDP!";
+    client.send_data(1, Bytes::from_static(test_data)).await.unwrap();
+
+    // Receive echoed UDP data
+    let resp = client.recv().await.unwrap();
+    assert_eq!(resp.packet_type, PacketType::Data);
+    assert_eq!(resp.payload.as_ref(), test_data);
+}
+
+#[tokio::test]
+async fn test_udp_multiple_packets() {
+    let udp_addr = common::start_udp_echo_server().await;
+    let server_addr = start_ember_server(test_config(0)).await;
+
+    let mut client = WispClient::connect_v1(server_addr).await.unwrap();
+    let _ = client.recv().await.unwrap();
+
+    let connect = Packet {
+        packet_type: PacketType::Connect,
+        stream_id: 1,
+        payload: {
+            let mut p = BytesMut::new();
+            p.put_u8(0x02); // UDP
+            p.put_u16_le(udp_addr.port());
+            p.put_slice(b"127.0.0.1");
+            p.freeze()
+        },
+    };
+    client.send(&connect).await.unwrap();
+
+    // UDP streams don't get CONTINUE packets (no flow control per spec)
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Send multiple UDP packets
+    for i in 0..5 {
+        let data = format!("packet-{}", i);
+        client.send_data(1, Bytes::from(data.into_bytes())).await.unwrap();
+    }
+
+    // Receive all echoes
+    let mut received = 0;
+    while received < 5 {
+        match tokio::time::timeout(std::time::Duration::from_secs(2), client.recv()).await {
+            Ok(Ok(pkt)) if pkt.packet_type == PacketType::Data => received += 1,
+            Ok(Ok(_)) => {}
+            _ => break,
+        }
+    }
+    assert_eq!(received, 5);
 }

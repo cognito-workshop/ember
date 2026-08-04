@@ -2,7 +2,7 @@ pub mod wisp_client;
 
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UdpSocket};
 
 /// Simple TCP echo server that echoes back whatever it receives.
 /// Returns the address it's listening on.
@@ -27,6 +27,28 @@ pub async fn start_echo_server() -> SocketAddr {
                     }
                 }
             });
+        }
+    });
+
+    addr
+}
+
+/// Simple UDP echo server that echoes back whatever it receives.
+/// Returns the address it's listening on.
+pub async fn start_udp_echo_server() -> SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    let socket = std::sync::Arc::new(socket);
+
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let (n, src) = match socket.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            // Echo back to sender
+            let _ = socket.send_to(&buf[..n], src).await;
         }
     });
 
