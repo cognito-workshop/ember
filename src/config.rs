@@ -12,6 +12,24 @@ pub struct Config {
     pub buffer: BufferConfig,
     pub extensions: ExtensionsConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub plugins: PluginsConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PluginsConfig {
+    #[serde(default)]
+    pub rate_limiter: Option<RateLimiterConfig>,
+    #[serde(default = "default_true")]
+    pub logger: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RateLimiterConfig {
+    #[serde(default = "default_rl_max")]
+    pub max_connections_per_ip: u32,
+    #[serde(default = "default_rl_window")]
+    pub window_secs: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -129,6 +147,12 @@ fn default_low_watermark() -> f64 {
 fn default_tcp_read_size() -> usize {
     131072 // 128KB — matches epoxy-server
 }
+fn default_rl_max() -> u32 {
+    100
+}
+fn default_rl_window() -> u64 {
+    60
+}
 fn default_true() -> bool {
     true
 }
@@ -147,6 +171,7 @@ impl Default for Config {
             buffer: BufferConfig::default(),
             extensions: ExtensionsConfig::default(),
             logging: LoggingConfig::default(),
+            plugins: PluginsConfig::default(),
         }
     }
 }
@@ -190,6 +215,15 @@ impl Default for ExtensionsConfig {
             udp: true,
             motd: default_motd(),
             stream_open_confirmation: false,
+        }
+    }
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            rate_limiter: None,
+            logger: true,
         }
     }
 }

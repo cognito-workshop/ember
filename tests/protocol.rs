@@ -22,6 +22,7 @@ fn test_config(port: u16) -> Config {
         logging: LoggingConfig {
             level: "error".to_string(),
         },
+        plugins: ember::config::PluginsConfig::default(),
     }
 }
 

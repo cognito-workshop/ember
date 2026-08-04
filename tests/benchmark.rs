@@ -25,6 +25,7 @@ fn test_config() -> Config {
         logging: LoggingConfig {
             level: "error".to_string(),
         },
+        plugins: ember::config::PluginsConfig::default(),
     }
 }
 

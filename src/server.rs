@@ -13,6 +13,7 @@ use crate::wisp::handshake::{handshake_v2, perform_v1_init, WispVersion};
 use crate::wisp::mux::MuxInner;
 use crate::wisp::extensions::{Extension, ExtensionNegotiation};
 use crate::wisp::plugin::PluginManager;
+use crate::wisp::plugins::{RateLimiter, ConnectionLimiter, Logger};
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -86,7 +87,18 @@ pub async fn run_with_listener(
     tracing::info!("Ember listening on {}", addr);
 
     // Create shared plugin manager
-    let plugins = Arc::new(PluginManager::new());
+    let mut pm = PluginManager::new();
+
+    // Register plugins from config
+    if let Some(ref rl_config) = config.plugins.rate_limiter {
+        pm.register(RateLimiter::new(rl_config.max_connections_per_ip, rl_config.window_secs));
+    }
+    pm.register(ConnectionLimiter::new(config.server.max_connections));
+    if config.plugins.logger {
+        pm.register(Arc::new(Logger));
+    }
+
+    let plugins = Arc::new(pm);
     plugins.load_all().await?;
 
     let connection_count = Arc::new(AtomicU32::new(0));
