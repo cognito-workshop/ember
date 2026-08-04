@@ -1,129 +1,123 @@
-<div align="center">
+# Ember
 
-# 🔥 Ember
-
-**A high-performance Wisp server written in Rust.**
-
-[![Rust](https://img.shields.io/badge/Rust-2024-000000?style=flat&logo=rust)](https://rust-lang.org)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-</div>
-
----
-
-## What is Ember?
-
-Ember is a [Wisp protocol](https://github.com/MercuryWorkshop/wisp-protocol) server built for performance, reliability, and extensibility. It proxies multiple TCP/UDP sockets over a single WebSocket connection — designed as a stepping stone toward a full [Scramjet](https://github.com/nicegram/nicegram-web/tree/main/scramjet) implementation.
-
-### Why Ember?
-
-Existing Wisp servers work, but they weren't built for:
-
-- **Connection migration** — survive server restarts and network changes without dropping active sessions
-- **Adaptive buffering** — dynamically tune buffer sizes based on traffic patterns
-- **Zero-copy forwarding** — minimize allocations on the hot path
-- **Plugin architecture** — extend behavior without forking
-- **Built-in metrics** — Prometheus-compatible observability out of the box
+**A high-performance Wisp v1/v2 proxy server written in Rust.**
 
 ## Features
 
-- **Wisp v1 + v2** — full protocol support including connection type negotiation
-- **TCP and UDP** proxying over WebSocket
-- **Async runtime** — built on [Tokio](https://tokio.rs) for non-blocking I/O
-- **TLS** — native TLS support via `rustls`
-- **Metrics** — built-in Prometheus endpoint
-- **Plugins** — hook into connection lifecycle events
-- **Low memory footprint** — efficient resource usage under high concurrency
+- Wisp v1 + v2 protocol (auto-detected)
+- TCP and UDP proxying over WebSocket
+- Thread-per-core runtime (Linux with SO_REUSEPORT)
+- Adaptive buffer sizing (tunes to traffic patterns)
+- Plugin system with built-in plugins
+- Prometheus /metrics endpoint
+- Auth extensions (password + Ed25519 key)
+- Hot reload config (SIGHUP)
+- Graceful shutdown (SIGINT/SIGTERM)
 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/sectersion/ember.git
-cd ember
-
 # Build
 cargo build --release
 
-# Run
-./target/release/ember
-```
+# Run (multi-thread mode)
+./target/release/ember -p 8080
 
-Ember listens on `ws://0.0.0.0:443` by default. See [Configuration](#configuration) for options.
+# Run (thread-per-core, Linux)
+./target/release/ember --thread-per-core -p 8080
+
+# Or with Docker
+docker build -t ember .
+docker run -p 8080:8080 -p 9090:9090 ember
+```
 
 ## Configuration
 
-Ember can be configured via CLI flags, environment variables, or a config file:
+Create an `ember.toml`:
 
 ```toml
-# ember.toml
 [server]
 host = "0.0.0.0"
-port = 443
+port = 8080
 max_connections = 10000
+metrics_port = 9090
 
-[tls]
-enabled = true
-cert_path = "/path/to/cert.pem"
-key_path = "/path/to/key.pem"
+[buffer]
+initial_size = 128
+min_size = 32
+max_size = 1024
 
-[buffering]
-initial_size = 4096
-max_size = 65536
-adaptive = true
-
-[metrics]
-enabled = true
-path = "/metrics"
+[extensions]
+udp = true
+motd = "Welcome to Ember"
 
 [plugins]
-directory = "./plugins"
+logger = true
+
+[plugins.rate_limiter]
+max_connections_per_ip = 100
+window_secs = 60
+
+[auth]
+# password = "secret"
+# public_keys = ["base64-ed25519-key..."]
 ```
 
-## Architecture
+CLI flags override config file values.
+
+## CLI Options
 
 ```
-┌──────────────┐     WebSocket      ┌──────────────┐
-│   Client     │◄──────────────────►│              │
-│  (Browser)   │    Wisp v1/v2      │    Ember     │
-└──────────────┘                    │              │
-                                    │  ┌────────┐  │
-                                    │  │ Plugin │  │
-                                    │  │ System │  │
-                                    │  └────────┘  │
-                                    │              │
-                                    │  ┌────────┐  │
-                                    │  │Metrics │  │
-                                    │  └────────┘  │
-                                    └──────┬───────┘
-                                           │
-                                    ┌──────┴───────┐
-                                    │  TCP / UDP   │
-                                    │   Targets    │
-                                    └──────────────┘
+ember [OPTIONS]
+  -c, --config <FILE>     Config file path
+  -h, --host <HOST>       Listen address
+  -p, --port <PORT>       Listen port
+      --thread-per-core   Use thread-per-core runtime (Linux)
+      --tls               Enable TLS
+      --cert <FILE>       TLS certificate
+      --key <FILE>        TLS private key
+  -v, --verbose           Debug logging
 ```
 
-## Roadmap
+## Plugin System
 
-- [ ] Core Wisp v1/v2 protocol
-- [ ] TCP proxying
-- [ ] UDP proxying
-- [ ] Adaptive buffering
-- [ ] Connection migration
-- [ ] Plugin system
-- [ ] Prometheus metrics
-- [ ] TLS support
-- [ ] Config file support
-- [ ] Scramjet protocol compatibility
+Ember has a plugin system with lifecycle hooks:
+- `ConnectionOpen` -- new WebSocket connection
+- `StreamOpen` -- new TCP/UDP stream
+- `DataTransfer` -- bytes flowing
+- `StreamClose` / `ConnectionClose` -- cleanup
+- `Shutdown` -- server stopping
 
-## Contributing
+### Built-in Plugins
 
-Contributions welcome. Open an issue first for large changes.
+| Plugin | Description |
+|--------|-------------|
+| RateLimiter | Per-IP connection limiting |
+| ConnectionLimiter | Global max connections |
+| Metrics | Atomic counters for monitoring |
+| Logger | Logs all plugin events |
+
+## Metrics
+
+```bash
+curl http://localhost:9090/metrics
+```
+
+Returns Prometheus-format metrics:
+- `ember_connections_active`
+- `ember_connections_total`
+- `ember_streams_active`
+- `ember_streams_total`
+- `ember_bytes_received_total`
+- `ember_bytes_sent_total`
+
+## Benchmarks
+
+Tested on 2-core Linux VPS:
+- 1 stream: ~500 MiB/s (flood benchmark)
+- 10 streams: ~480 MiB/s
+- Latency P50: ~46 us
 
 ## License
 
 MIT
-
----
-
-*Built by [sectersion](https://github.com/sectersion)*

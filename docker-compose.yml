@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  ember:
+    build: .
+    ports:
+      - "443:443"
+      - "9090:9090"
+    volumes:
+      - ./ember.toml:/app/ember.toml
+    command: ["--config", "/app/ember.toml"]
+    restart: unless-stopped

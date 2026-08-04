@@ -1,0 +1,7 @@
+/target
+*.md
+*.toml
+tests/
+benches/
+.git
+.gitignore
