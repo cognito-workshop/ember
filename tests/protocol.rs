@@ -3,7 +3,9 @@ mod common;
 use bytes::{BufMut, Bytes, BytesMut};
 use common::wisp_client::{Packet, PacketType, WispClient};
 use common::{start_echo_server, start_ember_server};
-use ember::config::{BufferConfig, Config, ExtensionsConfig, LoggingConfig, ServerConfig, TlsConfig};
+use ember::config::{
+    BufferConfig, Config, ExtensionsConfig, LoggingConfig, ServerConfig, TlsConfig,
+};
 
 fn test_config(port: u16) -> Config {
     Config {
@@ -56,7 +58,10 @@ async fn test_connect_and_data() {
     let _ = client.recv().await.unwrap();
 
     // Open a stream to the echo server
-    let resp = client.open_stream(1, "127.0.0.1", echo_addr.port()).await.unwrap();
+    let resp = client
+        .open_stream(1, "127.0.0.1", echo_addr.port())
+        .await
+        .unwrap();
 
     // Should get CONTINUE for the stream
     assert_eq!(resp.packet_type, PacketType::Continue);
@@ -64,7 +69,10 @@ async fn test_connect_and_data() {
 
     // Send data through the stream
     let test_data = b"Hello, Wisp!";
-    client.send_data(1, Bytes::from_static(test_data)).await.unwrap();
+    client
+        .send_data(1, Bytes::from_static(test_data))
+        .await
+        .unwrap();
 
     // Receive echoed data
     let resp = client.recv().await.unwrap();
@@ -85,7 +93,10 @@ async fn test_multiple_streams() {
 
     // Open 3 streams
     for i in 1..=3 {
-        let resp = client.open_stream(i, "127.0.0.1", echo_addr.port()).await.unwrap();
+        let resp = client
+            .open_stream(i, "127.0.0.1", echo_addr.port())
+            .await
+            .unwrap();
         assert_eq!(resp.packet_type, PacketType::Continue);
         assert_eq!(resp.stream_id, i);
     }
@@ -93,7 +104,10 @@ async fn test_multiple_streams() {
     // Send data on each stream
     for i in 1..=3 {
         let data = format!("stream-{}", i);
-        client.send_data(i, Bytes::from(data.into_bytes())).await.unwrap();
+        client
+            .send_data(i, Bytes::from(data.into_bytes()))
+            .await
+            .unwrap();
     }
 
     // Receive 3 echoed responses (order may vary)
@@ -123,10 +137,16 @@ async fn test_close_stream() {
     let _ = client.recv().await.unwrap(); // v1 init
 
     // Open stream
-    let _ = client.open_stream(1, "127.0.0.1", echo_addr.port()).await.unwrap();
+    let _ = client
+        .open_stream(1, "127.0.0.1", echo_addr.port())
+        .await
+        .unwrap();
 
     // Send some data
-    client.send_data(1, Bytes::from_static(b"before close")).await.unwrap();
+    client
+        .send_data(1, Bytes::from_static(b"before close"))
+        .await
+        .unwrap();
     let resp = client.recv().await.unwrap();
     assert_eq!(resp.packet_type, PacketType::Data);
 
@@ -137,7 +157,10 @@ async fn test_close_stream() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Opening a new stream should still work
-    let resp = client.open_stream(2, "127.0.0.1", echo_addr.port()).await.unwrap();
+    let resp = client
+        .open_stream(2, "127.0.0.1", echo_addr.port())
+        .await
+        .unwrap();
     assert_eq!(resp.packet_type, PacketType::Continue);
     assert_eq!(resp.stream_id, 2);
 }
@@ -150,11 +173,17 @@ async fn test_large_payload() {
     let mut client = WispClient::connect_v1(server_addr).await.unwrap();
     let _ = client.recv().await.unwrap(); // v1 init
 
-    let _ = client.open_stream(1, "127.0.0.1", echo_addr.port()).await.unwrap();
+    let _ = client
+        .open_stream(1, "127.0.0.1", echo_addr.port())
+        .await
+        .unwrap();
 
     // Send 64KB payload
     let data = vec![0xABu8; 64 * 1024];
-    client.send_data(1, Bytes::from(data.clone())).await.unwrap();
+    client
+        .send_data(1, Bytes::from(data.clone()))
+        .await
+        .unwrap();
 
     let resp = client.recv().await.unwrap();
     assert_eq!(resp.packet_type, PacketType::Data);
@@ -216,7 +245,10 @@ async fn test_udp_connect_and_echo() {
 
     // Send UDP data through the Wisp stream
     let test_data = b"hello UDP!";
-    client.send_data(1, Bytes::from_static(test_data)).await.unwrap();
+    client
+        .send_data(1, Bytes::from_static(test_data))
+        .await
+        .unwrap();
 
     // Receive echoed UDP data
     let resp = client.recv().await.unwrap();
@@ -251,7 +283,10 @@ async fn test_udp_multiple_packets() {
     // Send multiple UDP packets
     for i in 0..5 {
         let data = format!("packet-{}", i);
-        client.send_data(1, Bytes::from(data.into_bytes())).await.unwrap();
+        client
+            .send_data(1, Bytes::from(data.into_bytes()))
+            .await
+            .unwrap();
     }
 
     // Receive all echoes

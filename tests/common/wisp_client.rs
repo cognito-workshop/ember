@@ -44,7 +44,11 @@ impl Packet {
             _ => return Err(format!("invalid packet type: {:#04x}", pt)),
         };
 
-        Ok(Packet { packet_type, stream_id, payload })
+        Ok(Packet {
+            packet_type,
+            stream_id,
+            payload,
+        })
     }
 
     pub fn serialize(&self) -> Bytes {
@@ -68,7 +72,11 @@ impl Packet {
     }
 
     pub fn data(stream_id: u32, data: Bytes) -> Self {
-        Packet { packet_type: PacketType::Data, stream_id, payload: data }
+        Packet {
+            packet_type: PacketType::Data,
+            stream_id,
+            payload: data,
+        }
     }
 
     pub fn close(stream_id: u32, reason: u8) -> Self {
@@ -127,14 +135,11 @@ impl WispClient {
 
     /// Receive a packet (with timeout)
     pub async fn recv(&mut self) -> Result<Packet, String> {
-        let msg = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.ws.next(),
-        )
-        .await
-        .map_err(|_| "recv timeout".to_string())?
-        .ok_or("connection closed".to_string())?
-        .map_err(|e| format!("recv error: {}", e))?;
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), self.ws.next())
+            .await
+            .map_err(|_| "recv timeout".to_string())?
+            .ok_or("connection closed".to_string())?
+            .map_err(|e| format!("recv error: {}", e))?;
 
         if !msg.is_binary() {
             return Err(format!("expected binary, got non-binary message"));
@@ -145,7 +150,12 @@ impl WispClient {
     }
 
     /// Send CONNECT packet and wait for any response
-    pub async fn open_stream(&mut self, stream_id: u32, host: &str, port: u16) -> Result<Packet, String> {
+    pub async fn open_stream(
+        &mut self,
+        stream_id: u32,
+        host: &str,
+        port: u16,
+    ) -> Result<Packet, String> {
         let connect = Packet::connect(stream_id, host, port);
         self.send(&connect).await?;
         self.recv().await
@@ -158,11 +168,18 @@ impl WispClient {
     }
 
     /// Split into read/write halves for parallel flood sending
-    pub fn split(self) -> (
+    pub fn split(
+        self,
+    ) -> (
         flume::Sender<Message>,
         flume::Receiver<Message>,
-        futures_util::stream::SplitSink<WebSocketStream<tokio_websockets::MaybeTlsStream<TcpStream>>, Message>,
-        futures_util::stream::SplitStream<WebSocketStream<tokio_websockets::MaybeTlsStream<TcpStream>>>,
+        futures_util::stream::SplitSink<
+            WebSocketStream<tokio_websockets::MaybeTlsStream<TcpStream>>,
+            Message,
+        >,
+        futures_util::stream::SplitStream<
+            WebSocketStream<tokio_websockets::MaybeTlsStream<TcpStream>>,
+        >,
     ) {
         use futures_util::SinkExt;
         let (ws_write, ws_read) = self.ws.split();
@@ -179,14 +196,14 @@ impl WispClient {
         // Spawn a writer task
         tokio::spawn(async move {
             while let Ok(msg) = rx.recv_async().await {
-                if ws_write.send(msg).await.is_err() { break; }
+                if ws_write.send(msg).await.is_err() {
+                    break;
+                }
             }
         });
 
         // Spawn a reader task (just drain)
-        tokio::spawn(async move {
-            while let Some(_) = ws_read.next().await {}
-        });
+        tokio::spawn(async move { while let Some(_) = ws_read.next().await {} });
 
         tx
     }

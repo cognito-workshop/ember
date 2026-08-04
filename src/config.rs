@@ -206,8 +206,6 @@ fn default_pool_idle_timeout_secs() -> u64 {
     60
 }
 
-
-
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
@@ -228,8 +226,6 @@ impl Default for ServerConfig {
         }
     }
 }
-
-
 
 impl Default for BufferConfig {
     fn default() -> Self {

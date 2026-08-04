@@ -45,7 +45,11 @@ impl Packet {
         let stream_id = buf.get_u32_le();
         let payload = buf.copy_to_bytes(buf.remaining());
 
-        Ok(Packet { packet_type, stream_id, payload })
+        Ok(Packet {
+            packet_type,
+            stream_id,
+            payload,
+        })
     }
 
     pub fn serialize(&self) -> Bytes {
@@ -69,18 +73,30 @@ impl Packet {
     }
 
     pub fn data(stream_id: StreamId, payload: Bytes) -> Self {
-        Packet { packet_type: PacketType::Data, stream_id, payload }
+        Packet {
+            packet_type: PacketType::Data,
+            stream_id,
+            payload,
+        }
     }
 
     pub fn continue_packet(stream_id: StreamId, buffer_remaining: u32) -> Self {
         let mut payload = BytesMut::with_capacity(4);
         payload.put_u32_le(buffer_remaining);
-        Packet { packet_type: PacketType::Continue, stream_id, payload: payload.freeze() }
+        Packet {
+            packet_type: PacketType::Continue,
+            stream_id,
+            payload: payload.freeze(),
+        }
     }
 
     pub fn close(stream_id: StreamId, reason: u8) -> Self {
         let payload = Bytes::from(vec![reason]);
-        Packet { packet_type: PacketType::Close, stream_id, payload }
+        Packet {
+            packet_type: PacketType::Close,
+            stream_id,
+            payload,
+        }
     }
 
     pub fn info(stream_id: StreamId, major: u8, minor: u8, extensions: &[u8]) -> Self {
@@ -88,7 +104,11 @@ impl Packet {
         payload.put_u8(major);
         payload.put_u8(minor);
         payload.put_slice(extensions);
-        Packet { packet_type: PacketType::Info, stream_id, payload: payload.freeze() }
+        Packet {
+            packet_type: PacketType::Info,
+            stream_id,
+            payload: payload.freeze(),
+        }
     }
 }
 

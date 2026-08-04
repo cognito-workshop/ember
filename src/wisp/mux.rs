@@ -71,7 +71,10 @@ impl MuxInner {
         }
     }
 
-    pub async fn run<S>(&mut self, ws: tokio_websockets::WebSocketStream<S>) -> Result<(), WispError>
+    pub async fn run<S>(
+        &mut self,
+        ws: tokio_websockets::WebSocketStream<S>,
+    ) -> Result<(), WispError>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -83,9 +86,12 @@ impl MuxInner {
         self.ws_write_tx = ws_write_tx;
 
         // Notify plugins: connection open
-        let _ = self.plugins.notify(&PluginEvent::ConnectionOpen {
-            addr: self.peer_addr,
-        }).await;
+        let _ = self
+            .plugins
+            .notify(&PluginEvent::ConnectionOpen {
+                addr: self.peer_addr,
+            })
+            .await;
 
         // Spawn a dedicated writer task
         let writer_handle = tokio::spawn(async move {
@@ -100,12 +106,18 @@ impl MuxInner {
         let result = self.read_loop(&mut ws_read).await;
 
         // Notify plugins: connection close
-        let _ = self.plugins.notify(&PluginEvent::ConnectionClose {
-            addr: self.peer_addr,
-        }).await;
+        let _ = self
+            .plugins
+            .notify(&PluginEvent::ConnectionClose {
+                addr: self.peer_addr,
+            })
+            .await;
 
         // Close channel to signal writer to exit
-        drop(std::mem::replace(&mut self.ws_write_tx, flume::unbounded().0));
+        drop(std::mem::replace(
+            &mut self.ws_write_tx,
+            flume::unbounded().0,
+        ));
 
         let _ = writer_handle.await;
         result
@@ -127,7 +139,9 @@ impl MuxInner {
             };
 
             if msg.is_close() || !msg.is_binary() {
-                if msg.is_close() { return Ok(()); }
+                if msg.is_close() {
+                    return Ok(());
+                }
                 continue;
             }
 
@@ -168,7 +182,11 @@ impl MuxInner {
     }
 
     /// Raw connect handler — takes bytes directly, avoids Packet struct
-    async fn handle_connect_raw(&mut self, stream_id: StreamId, payload: Bytes) -> Result<(), WispError> {
+    async fn handle_connect_raw(
+        &mut self,
+        stream_id: StreamId,
+        payload: Bytes,
+    ) -> Result<(), WispError> {
         // Secondary stream count check
         if self.streams.len() as u32 >= self.max_streams {
             self.send_close(stream_id, 0x45)?;
@@ -204,7 +222,13 @@ impl MuxInner {
         let (data_tx, data_rx) = flume::bounded(self.buffer_config.initial_size as usize);
         let buffer = AdaptiveBuffer::new(self.buffer_config.clone());
 
-        self.streams.insert(stream_id, StreamEntry { sender: data_tx, buffer });
+        self.streams.insert(
+            stream_id,
+            StreamEntry {
+                sender: data_tx,
+                buffer,
+            },
+        );
 
         let ws_write_tx = self.ws_write_tx.clone();
         let tcp_read_size = self.tcp_read_size;
@@ -227,7 +251,9 @@ impl MuxInner {
                         return;
                     }
                 };
-                if let Err(e) = crate::proxy::udp::proxy_udp(stream_id, addr, data_rx, ws_write_tx).await {
+                if let Err(e) =
+                    crate::proxy::udp::proxy_udp(stream_id, addr, data_rx, ws_write_tx).await
+                {
                     tracing::trace!("UDP proxy error for stream {}: {}", stream_id, e);
                 }
             });
@@ -241,15 +267,20 @@ impl MuxInner {
                     pool.miss();
                     if let Some(ref cb) = circuit_breaker {
                         let hostname = hostname.clone();
-                        let connect_result = cb.call(|| async move {
-                            proxy_tcp_connect(hostname, port)
-                                .await
-                                .map_err(|e| CircuitBreakerError::UpstreamError(e.to_string()))
-                        }).await;
+                        let connect_result = cb
+                            .call(|| async move {
+                                proxy_tcp_connect(hostname, port)
+                                    .await
+                                    .map_err(|e| CircuitBreakerError::UpstreamError(e.to_string()))
+                            })
+                            .await;
                         match connect_result {
                             Ok(stream) => stream,
                             Err(CircuitBreakerError::CircuitOpen) => {
-                                tracing::warn!("circuit breaker open, rejecting TCP connect for stream {}", stream_id);
+                                tracing::warn!(
+                                    "circuit breaker open, rejecting TCP connect for stream {}",
+                                    stream_id
+                                );
                                 let packet = Packet::close(stream_id, 0x44);
                                 let _ = ws_write_tx.send(Message::binary(packet.serialize()));
                                 return;
@@ -271,16 +302,30 @@ impl MuxInner {
                                     if attempts >= max_retries {
                                         tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
                                         let reason = match e {
-                                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                                            WispError::Io(ref io_err)
+                                                if io_err.kind()
+                                                    == std::io::ErrorKind::ConnectionRefused =>
+                                            {
+                                                0x44
+                                            }
                                             WispError::Io(_) => 0x42,
                                             _ => 0x41,
                                         };
                                         let packet = Packet::close(stream_id, reason);
-                                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                        let _ =
+                                            ws_write_tx.send(Message::binary(packet.serialize()));
                                         return;
                                     }
-                                    tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
-                                    tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
+                                    tracing::debug!(
+                                        "TCP connect attempt {} failed for stream {}, retrying: {}",
+                                        attempts,
+                                        stream_id,
+                                        e
+                                    );
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        100 * attempts as u64,
+                                    ))
+                                    .await;
                                 }
                             }
                         }
@@ -291,7 +336,15 @@ impl MuxInner {
                 }
                 let continue_pkt = Packet::continue_packet(stream_id, 128);
                 let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                let result = crate::proxy::tcp::proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await;
+                let result = crate::proxy::tcp::proxy_tcp(
+                    stream_id,
+                    tcp_stream,
+                    data_rx,
+                    ws_write_tx,
+                    tcp_read_size,
+                    metrics,
+                )
+                .await;
                 match result {
                     Ok(stream) => {
                         pool.put(&target, stream).await;
@@ -355,7 +408,10 @@ impl MuxInner {
 
         self.streams.insert(
             packet.stream_id,
-            StreamEntry { sender: data_tx, buffer },
+            StreamEntry {
+                sender: data_tx,
+                buffer,
+            },
         );
 
         let stream_id = packet.stream_id;
@@ -394,15 +450,20 @@ impl MuxInner {
                     pool.miss();
                     if let Some(ref cb) = circuit_breaker {
                         let hostname = hostname.clone();
-                        let connect_result = cb.call(|| async move {
-                            proxy_tcp_connect(hostname, port)
-                                .await
-                                .map_err(|e| CircuitBreakerError::UpstreamError(e.to_string()))
-                        }).await;
+                        let connect_result = cb
+                            .call(|| async move {
+                                proxy_tcp_connect(hostname, port)
+                                    .await
+                                    .map_err(|e| CircuitBreakerError::UpstreamError(e.to_string()))
+                            })
+                            .await;
                         match connect_result {
                             Ok(stream) => stream,
                             Err(CircuitBreakerError::CircuitOpen) => {
-                                tracing::warn!("circuit breaker open, rejecting TCP connect for stream {}", stream_id);
+                                tracing::warn!(
+                                    "circuit breaker open, rejecting TCP connect for stream {}",
+                                    stream_id
+                                );
                                 let packet = Packet::close(stream_id, 0x44);
                                 let _ = ws_write_tx.send(Message::binary(packet.serialize()));
                                 return;
@@ -424,16 +485,30 @@ impl MuxInner {
                                     if attempts >= max_retries {
                                         tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
                                         let reason = match e {
-                                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                                            WispError::Io(ref io_err)
+                                                if io_err.kind()
+                                                    == std::io::ErrorKind::ConnectionRefused =>
+                                            {
+                                                0x44
+                                            }
                                             WispError::Io(_) => 0x42,
                                             _ => 0x41,
                                         };
                                         let packet = Packet::close(stream_id, reason);
-                                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                        let _ =
+                                            ws_write_tx.send(Message::binary(packet.serialize()));
                                         return;
                                     }
-                                    tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
-                                    tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
+                                    tracing::debug!(
+                                        "TCP connect attempt {} failed for stream {}, retrying: {}",
+                                        attempts,
+                                        stream_id,
+                                        e
+                                    );
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        100 * attempts as u64,
+                                    ))
+                                    .await;
                                 }
                             }
                         }
@@ -444,7 +519,15 @@ impl MuxInner {
                 }
                 let continue_pkt = Packet::continue_packet(stream_id, 128);
                 let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                let result = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await;
+                let result = proxy_tcp(
+                    stream_id,
+                    tcp_stream,
+                    data_rx,
+                    ws_write_tx,
+                    tcp_read_size,
+                    metrics,
+                )
+                .await;
                 match result {
                     Ok(stream) => {
                         pool.put(&target, stream).await;
@@ -462,10 +545,14 @@ impl MuxInner {
 
     #[allow(dead_code)]
     fn handle_data(&self, packet: Packet) -> Result<(), WispError> {
-        let entry = self.streams.get(&packet.stream_id)
+        let entry = self
+            .streams
+            .get(&packet.stream_id)
             .ok_or(WispError::UnknownStream(packet.stream_id))?;
 
-        entry.sender.try_send(packet.payload)
+        entry
+            .sender
+            .try_send(packet.payload)
             .map_err(|_| WispError::BufferFull(packet.stream_id))?;
 
         Ok(())
@@ -489,13 +576,18 @@ impl MuxInner {
         let plugins = self.plugins.clone();
         let stream_id_copy = stream_id;
         tokio::spawn(async move {
-            let _ = plugins.notify(&PluginEvent::StreamClose { stream_id: stream_id_copy }).await;
+            let _ = plugins
+                .notify(&PluginEvent::StreamClose {
+                    stream_id: stream_id_copy,
+                })
+                .await;
         });
     }
 
     fn send_close(&self, stream_id: StreamId, reason: u8) -> Result<(), WispError> {
         let packet = Packet::close(stream_id, reason);
-        self.ws_write_tx.send(Message::binary(packet.serialize()))
+        self.ws_write_tx
+            .send(Message::binary(packet.serialize()))
             .map_err(|_| WispError::ConnectionClosed)
     }
 }

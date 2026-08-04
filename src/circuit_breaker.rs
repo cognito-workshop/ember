@@ -53,7 +53,11 @@ pub enum CircuitBreakerError {
 }
 
 impl CircuitBreaker {
-    pub fn new(failure_threshold: u64, recovery_timeout_secs: u64, half_open_max: u64) -> Arc<Self> {
+    pub fn new(
+        failure_threshold: u64,
+        recovery_timeout_secs: u64,
+        half_open_max: u64,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: AtomicU8::new(STATE_CLOSED),
             failure_count: AtomicU64::new(0),
@@ -88,8 +92,7 @@ impl CircuitBreaker {
         let last = *self.last_failure.read().await;
         if let Some(t) = last {
             if t.elapsed() >= self.recovery_timeout {
-                self.state
-                    .store(STATE_HALF_OPEN, Ordering::Release);
+                self.state.store(STATE_HALF_OPEN, Ordering::Release);
                 self.half_open_remaining
                     .store(self.half_open_max, Ordering::Relaxed);
                 tracing::info!("circuit breaker: OPEN -> HALF_OPEN (recovery timeout elapsed)");
@@ -112,8 +115,7 @@ impl CircuitBreaker {
             State::HalfOpen => {
                 let remaining = self.half_open_remaining.fetch_sub(1, Ordering::SeqCst);
                 if remaining == 0 {
-                    self.half_open_remaining
-                        .store(0, Ordering::Relaxed);
+                    self.half_open_remaining.store(0, Ordering::Relaxed);
                     return Err(CircuitBreakerError::CircuitOpen);
                 }
             }

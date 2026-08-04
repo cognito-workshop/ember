@@ -67,7 +67,10 @@ const TAB_NAMES: &[&str] = &[
     "Logs",
 ];
 
-pub async fn run_tui(metrics: Arc<Metrics>, config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn run_tui(
+    metrics: Arc<Metrics>,
+    config: Config,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -75,7 +78,10 @@ pub async fn run_tui(metrics: Arc<Metrics>, config: Config) -> Result<(), Box<dy
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = TuiState::new();
-    state.push_log(format!("TUI started — Ember v{}", env!("CARGO_PKG_VERSION")));
+    state.push_log(format!(
+        "TUI started — Ember v{}",
+        env!("CARGO_PKG_VERSION")
+    ));
     state.push_log(format!(
         "Listening on {}:{}",
         config.server.host, config.server.port
@@ -166,7 +172,7 @@ fn draw(frame: &mut Frame, state: &TuiState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // header
-            Constraint::Min(0),   // body
+            Constraint::Min(0),    // body
             Constraint::Length(1), // footer
         ])
         .split(area);
@@ -264,7 +270,7 @@ fn draw_overview(frame: &mut Frame, state: &TuiState, area: Rect) {
         .constraints([
             Constraint::Length(8), // connections + streams
             Constraint::Length(6), // throughput
-            Constraint::Min(0),   // recent logs
+            Constraint::Min(0),    // recent logs
         ])
         .split(area);
 
@@ -409,10 +415,7 @@ fn draw_connections_panel(frame: &mut Frame, state: &TuiState, area: Rect) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled(
-                "Connection limit:   ",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled("Connection limit:   ", Style::default().fg(Color::DarkGray)),
             Span::styled("10000", Style::default().fg(Color::Yellow)),
         ]),
         Line::from(""),
@@ -492,12 +495,10 @@ fn draw_throughput_panel(frame: &mut Frame, state: &TuiState, area: Rect) {
             ),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "Throughput counters are cumulative since server start.",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "Throughput counters are cumulative since server start.",
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
     frame.render_widget(Paragraph::new(items), inner);
@@ -521,7 +522,10 @@ fn draw_plugins_panel(frame: &mut Frame, _state: &TuiState, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("metrics", Style::default().fg(Color::White)),
-            Span::styled(" — connection/stream/byte counters", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                " — connection/stream/byte counters",
+                Style::default().fg(Color::DarkGray),
+            ),
         ])),
         ListItem::new(Line::from(vec![
             Span::styled(
@@ -531,7 +535,10 @@ fn draw_plugins_panel(frame: &mut Frame, _state: &TuiState, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("connection-limiter", Style::default().fg(Color::White)),
-            Span::styled(" — global max connections", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                " — global max connections",
+                Style::default().fg(Color::DarkGray),
+            ),
         ])),
         ListItem::new(Line::from(vec![
             Span::styled(
@@ -580,12 +587,7 @@ fn draw_logs_panel(frame: &mut Frame, state: &TuiState, area: Rect) {
     frame.render_widget(Paragraph::new(log_lines).wrap(Wrap { trim: false }), inner);
 
     if total > visible_height {
-        let scroll_info = format!(
-            " {}-{}/{} (↑/↓ to scroll) ",
-            start + 1,
-            end,
-            total,
-        );
+        let scroll_info = format!(" {}-{}/{} (↑/↓ to scroll) ", start + 1, end, total,);
         let footer_area = Rect {
             x: inner.x,
             y: inner.y + inner.height.saturating_sub(1),

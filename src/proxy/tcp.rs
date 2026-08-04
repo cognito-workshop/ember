@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use flume::{Receiver, Sender};
@@ -22,18 +22,24 @@ fn optimize_tcp_socket(stream: &TcpStream) {
             let fd = stream.as_raw_fd();
             let one: libc::c_int = 1;
             libc::setsockopt(
-                fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE,
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_KEEPALIVE,
                 &one as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
             let buf_size: libc::c_int = 256 * 1024;
             libc::setsockopt(
-                fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
                 &buf_size as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
             libc::setsockopt(
-                fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
                 &buf_size as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
@@ -101,7 +107,9 @@ pub async fn proxy_tcp(
         }
     };
 
-    let tcp_stream = reader.into_inner().reunite(tcp_write)
+    let tcp_stream = reader
+        .into_inner()
+        .reunite(tcp_write)
         .map_err(|e| WispError::Io(std::io::Error::other(e.to_string())))?;
     result?;
     Ok(tcp_stream)

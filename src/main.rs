@@ -29,9 +29,7 @@ fn main() {
                 .init();
         }
         None => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
         }
     }
 
@@ -40,13 +38,21 @@ fn main() {
         .unwrap_or(4);
 
     if cli.thread_per_core {
-        tracing::info!("Ember v{} starting in thread-per-core mode ({} cores)", env!("CARGO_PKG_VERSION"), workers);
+        tracing::info!(
+            "Ember v{} starting in thread-per-core mode ({} cores)",
+            env!("CARGO_PKG_VERSION"),
+            workers
+        );
         thread_per_core_main(config, config_path, workers);
     } else if cli.tui {
         tracing::info!("Ember v{} starting in TUI mode", env!("CARGO_PKG_VERSION"));
         tui_main(config);
     } else {
-        tracing::info!("Ember v{} starting up ({} workers)", env!("CARGO_PKG_VERSION"), workers);
+        tracing::info!(
+            "Ember v{} starting up ({} workers)",
+            env!("CARGO_PKG_VERSION"),
+            workers
+        );
         multi_thread_main(config, config_path, workers);
     }
 }
@@ -125,7 +131,11 @@ fn multi_thread_main(config: ember::config::Config, config_path: Option<String>,
     });
 }
 
-fn thread_per_core_main(config: ember::config::Config, config_path: Option<String>, num_cores: usize) {
+fn thread_per_core_main(
+    config: ember::config::Config,
+    config_path: Option<String>,
+    num_cores: usize,
+) {
     let mut handles = Vec::new();
 
     for i in 0..num_cores {
@@ -141,7 +151,8 @@ fn thread_per_core_main(config: ember::config::Config, config_path: Option<Strin
                 runtime.block_on(async {
                     let server_handle = tokio::spawn(ember::server::run(config));
                     wait_for_shutdown().await;
-                    ember::server::IS_SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+                    ember::server::IS_SHUTTING_DOWN
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                     server_handle.abort();
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 });
@@ -151,7 +162,10 @@ fn thread_per_core_main(config: ember::config::Config, config_path: Option<Strin
         handles.push(handle);
     }
 
-    tracing::info!("Spawned {} worker threads, waiting for shutdown...", num_cores);
+    tracing::info!(
+        "Spawned {} worker threads, waiting for shutdown...",
+        num_cores
+    );
 
     // Handle SIGHUP on the main thread (non-async)
     #[cfg(unix)]
@@ -161,7 +175,10 @@ fn thread_per_core_main(config: ember::config::Config, config_path: Option<Strin
         // Initialize the self-pipe for SIGHUP
         let read_fd = sighup_pipe::init();
         unsafe {
-            libc::signal(libc::SIGHUP, sighup_pipe::handler as *const () as libc::sighandler_t);
+            libc::signal(
+                libc::SIGHUP,
+                sighup_pipe::handler as *const () as libc::sighandler_t,
+            );
         }
 
         // Spawn a thread that reads SIGHUP from the pipe and reloads config
@@ -249,7 +266,10 @@ async fn sighup_reload_task(config_path: String) {
 
     loop {
         sighup.recv().await;
-        tracing::info!("Received SIGHUP, reloading config from '{}'...", config_path);
+        tracing::info!(
+            "Received SIGHUP, reloading config from '{}'...",
+            config_path
+        );
         match ember::config::Config::load_from_path(&config_path) {
             Ok(new_config) => {
                 tracing::info!(

@@ -3,7 +3,9 @@ mod common;
 use bytes::{BufMut, Bytes, BytesMut};
 use common::wisp_client::{PacketType, WispClient};
 use common::{start_echo_server, start_ember_server};
-use ember::config::{BufferConfig, Config, ExtensionsConfig, LoggingConfig, ServerConfig, TlsConfig};
+use ember::config::{
+    BufferConfig, Config, ExtensionsConfig, LoggingConfig, ServerConfig, TlsConfig,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -83,9 +85,14 @@ async fn run_flood_bench(num_connections: usize, streams_per_conn: usize, durati
                     let mut sent: u64 = 0;
                     while Instant::now() < deadline {
                         for _ in 0..10 {
-                            let packet = crate::common::wisp_client::Packet::data(stream_id, payload.clone());
+                            let packet = crate::common::wisp_client::Packet::data(
+                                stream_id,
+                                payload.clone(),
+                            );
                             let msg = tokio_websockets::Message::binary(packet.serialize());
-                            if ws_tx.send(msg).is_err() { break; }
+                            if ws_tx.send(msg).is_err() {
+                                break;
+                            }
                             sent += 1;
                         }
                         tokio::task::yield_now().await;
@@ -120,7 +127,10 @@ async fn run_flood_bench(num_connections: usize, streams_per_conn: usize, durati
     println!("Total streams:     {}", num_connections * streams_per_conn);
     println!("Payload size:      {} KB", payload_size / 1024);
     println!("Duration:          {}s", duration_secs);
-    println!("Total sent:        {:.2} MB", total as f64 / (1024.0 * 1024.0));
+    println!(
+        "Total sent:        {:.2} MB",
+        total as f64 / (1024.0 * 1024.0)
+    );
     println!("Throughput:        {:.2} MiB/s", throughput);
     println!();
 }
@@ -133,7 +143,10 @@ async fn benchmark_latency() {
     let mut client = WispClient::connect_v1(server_addr).await.unwrap();
     let _ = client.recv().await.unwrap();
 
-    let _ = client.open_stream(1, "127.0.0.1", echo_addr.port()).await.unwrap();
+    let _ = client
+        .open_stream(1, "127.0.0.1", echo_addr.port())
+        .await
+        .unwrap();
 
     let payload = Bytes::from(vec![0x42u8; 1024]);
     let iterations = 30;
@@ -142,7 +155,9 @@ async fn benchmark_latency() {
         client.send_data(1, payload.clone()).await.unwrap();
         loop {
             let pkt = client.recv().await.unwrap();
-            if pkt.packet_type == PacketType::Data { break; }
+            if pkt.packet_type == PacketType::Data {
+                break;
+            }
         }
     }
 
@@ -234,7 +249,9 @@ async fn run_udp_flood_bench(num_connections: usize, streams_per_conn: usize, du
                         for _ in 0..10 {
                             let packet = Packet::data(stream_id, payload.clone());
                             let msg = tokio_websockets::Message::binary(packet.serialize());
-                            if ws_tx.send(msg).is_err() { break; }
+                            if ws_tx.send(msg).is_err() {
+                                break;
+                            }
                             sent += 1;
                         }
                         tokio::task::yield_now().await;
@@ -268,7 +285,10 @@ async fn run_udp_flood_bench(num_connections: usize, streams_per_conn: usize, du
     println!("Streams/conn:      {}", streams_per_conn);
     println!("Payload size:      {} KB", payload_size / 1024);
     println!("Duration:          {}s", duration_secs);
-    println!("Total sent:        {:.2} MB", total as f64 / (1024.0 * 1024.0));
+    println!(
+        "Total sent:        {:.2} MB",
+        total as f64 / (1024.0 * 1024.0)
+    );
     println!("Throughput:        {:.2} MiB/s", throughput);
     println!();
 }

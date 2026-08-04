@@ -7,9 +7,7 @@ use crate::wisp::packet::StreamId;
 #[derive(Debug, Clone)]
 pub enum PluginEvent {
     /// New WebSocket connection established
-    ConnectionOpen {
-        addr: SocketAddr,
-    },
+    ConnectionOpen { addr: SocketAddr },
     /// Wisp v1 or v2 handshake completed
     HandshakeComplete {
         addr: SocketAddr,
@@ -23,18 +21,11 @@ pub enum PluginEvent {
         stream_type: u8, // 0x01=TCP, 0x02=UDP
     },
     /// DATA packet received/sent
-    DataTransfer {
-        stream_id: StreamId,
-        bytes: u64,
-    },
+    DataTransfer { stream_id: StreamId, bytes: u64 },
     /// Stream closed
-    StreamClose {
-        stream_id: StreamId,
-    },
+    StreamClose { stream_id: StreamId },
     /// Connection closed
-    ConnectionClose {
-        addr: SocketAddr,
-    },
+    ConnectionClose { addr: SocketAddr },
     /// Server shutting down
     Shutdown,
 }

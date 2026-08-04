@@ -35,7 +35,11 @@ pub struct ServerInfo {
 
 impl ServerInfo {
     pub fn new(major: u8, minor: u8, extensions: Vec<Extension>) -> Self {
-        Self { version_major: major, version_minor: minor, extensions }
+        Self {
+            version_major: major,
+            version_minor: minor,
+            extensions,
+        }
     }
 
     pub fn to_payload(&self) -> Bytes {
@@ -65,7 +69,11 @@ impl ClientInfo {
         let version_major = payload[0];
         let version_minor = payload[1];
         let extensions = parse_extension_data(&payload[2..]);
-        Ok(Self { version_major, version_minor, extensions })
+        Ok(Self {
+            version_major,
+            version_minor,
+            extensions,
+        })
     }
 }
 
@@ -104,7 +112,9 @@ where
         .map_err(|e| WispError::WebSocket(e.to_string()))?;
 
     if !client_msg.is_binary() {
-        return Err(WispError::WebSocket("expected binary message during handshake".into()));
+        return Err(WispError::WebSocket(
+            "expected binary message during handshake".into(),
+        ));
     }
 
     let client_bytes: Bytes = client_msg.into_payload().into();
@@ -125,7 +135,8 @@ where
                 .filter_map(|ed| Extension::from_u8(ed.id))
                 .collect();
 
-            let negotiation = ExtensionNegotiation::negotiate(server_extensions, &client_extensions);
+            let negotiation =
+                ExtensionNegotiation::negotiate(server_extensions, &client_extensions);
 
             let continue_pkt = Packet::continue_packet(0, buffer_size);
             ws.send(Message::binary(continue_pkt.serialize())).await?;
@@ -133,7 +144,10 @@ where
             Ok((negotiation, WispVersion::V2))
         }
         other => {
-            tracing::error!("unexpected packet type {:#04x} during v2 handshake", other as u8);
+            tracing::error!(
+                "unexpected packet type {:#04x} during v2 handshake",
+                other as u8
+            );
             Err(WispError::WebSocket(format!(
                 "unexpected packet type {:#04x} during handshake",
                 other as u8
@@ -142,7 +156,10 @@ where
     }
 }
 
-pub async fn perform_v1_init<S>(ws: &mut WebSocketStream<S>, buffer_size: u32) -> Result<(), WispError>
+pub async fn perform_v1_init<S>(
+    ws: &mut WebSocketStream<S>,
+    buffer_size: u32,
+) -> Result<(), WispError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {

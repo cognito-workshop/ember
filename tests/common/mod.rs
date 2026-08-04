@@ -73,7 +73,9 @@ pub async fn start_ember_server(config: ember::config::Config) -> SocketAddr {
 
     // Spawn the server with the pre-bound listener
     tokio::spawn(async move {
-        ember::server::run_with_listener(listener, config).await.unwrap();
+        ember::server::run_with_listener(listener, config)
+            .await
+            .unwrap();
     });
 
     // Give the server a moment to start accepting

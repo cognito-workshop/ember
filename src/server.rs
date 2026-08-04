@@ -13,13 +13,13 @@ use tokio_websockets::ServerBuilder;
 
 use crate::circuit_breaker::CircuitBreaker;
 use crate::config::Config;
+use crate::pool::ConnectionPool;
 use crate::tls::load_tls_config;
+use crate::wisp::extensions::{Extension, ExtensionNegotiation};
 use crate::wisp::handshake::{handshake_v2, perform_v1_init, WispVersion};
 use crate::wisp::mux::MuxInner;
-use crate::wisp::extensions::{Extension, ExtensionNegotiation};
 use crate::wisp::plugin::PluginManager;
-use crate::wisp::plugins::{Metrics, RateLimiter, ConnectionLimiter, Logger};
-use crate::pool::ConnectionPool;
+use crate::wisp::plugins::{ConnectionLimiter, Logger, Metrics, RateLimiter};
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -39,21 +39,43 @@ pub async fn run_with_metrics(
 }
 
 /// Create a TcpListener with SO_REUSEPORT on Linux (for thread-per-core mode)
-async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::Error + Send + Sync>> {
+async fn create_listener(
+    addr: &str,
+) -> Result<TcpListener, Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(target_os = "linux")]
     {
         let socket_addr: SocketAddr = addr.parse()?;
-        let domain = if socket_addr.is_ipv4() { libc::AF_INET } else { libc::AF_INET6 };
+        let domain = if socket_addr.is_ipv4() {
+            libc::AF_INET
+        } else {
+            libc::AF_INET6
+        };
 
         unsafe {
-            let fd = libc::socket(domain, libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0);
+            let fd = libc::socket(
+                domain,
+                libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+                0,
+            );
             if fd < 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
 
             let one: libc::c_int = 1;
-            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEPORT,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
 
             let mut storage: libc::sockaddr_storage = std::mem::zeroed();
             let (addr_ptr, addr_len) = match socket_addr {
@@ -62,14 +84,20 @@ async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::
                     sin.sin_family = libc::AF_INET as libc::sa_family_t;
                     sin.sin_port = a.port().to_be();
                     sin.sin_addr.s_addr = u32::from_ne_bytes(a.ip().octets());
-                    (&storage as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
+                    (
+                        &storage as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                    )
                 }
                 SocketAddr::V6(ref a) => {
                     let sin6 = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
                     sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
                     sin6.sin6_port = a.port().to_be();
                     sin6.sin6_addr.s6_addr = a.ip().octets();
-                    (&storage as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
+                    (
+                        &storage as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                    )
                 }
             };
 
@@ -115,7 +143,9 @@ async fn run_with_listener_and_metrics(
     // Create TLS acceptor if TLS is enabled
     let tls_acceptor = if config.tls.enabled {
         let tls_config = load_tls_config(&config.tls.cert_path, &config.tls.key_path)?;
-        Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(tls_config))))
+        Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
+            tls_config,
+        ))))
     } else {
         None
     };
@@ -136,7 +166,10 @@ async fn run_with_listener_and_metrics(
 
     // Register plugins from config
     if let Some(ref rl_config) = config.plugins.rate_limiter {
-        pm.register(RateLimiter::new(rl_config.max_connections_per_ip, rl_config.window_secs));
+        pm.register(RateLimiter::new(
+            rl_config.max_connections_per_ip,
+            rl_config.window_secs,
+        ));
     }
     pm.register(ConnectionLimiter::new(config.server.max_connections));
     if config.plugins.logger {
@@ -182,7 +215,18 @@ async fn run_with_listener_and_metrics(
         let pool = pool.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config, plugins, metrics, tls_acceptor, circuit_breaker, pool).await {
+            if let Err(e) = handle_connection(
+                stream,
+                addr,
+                config,
+                plugins,
+                metrics,
+                tls_acceptor,
+                circuit_breaker,
+                pool,
+            )
+            .await
+            {
                 tracing::error!("Connection error from {}: {}", addr, e);
             }
             count.fetch_sub(1, Ordering::Relaxed);
@@ -206,10 +250,30 @@ async fn handle_connection(
     if let Some(acceptor) = tls_acceptor {
         let tls_stream = acceptor.accept(stream).await?;
         let (req, ws_stream) = ServerBuilder::new().accept(tls_stream).await?;
-        handle_websocket(req, ws_stream, addr, config, plugins, metrics, circuit_breaker, pool).await?;
+        handle_websocket(
+            req,
+            ws_stream,
+            addr,
+            config,
+            plugins,
+            metrics,
+            circuit_breaker,
+            pool,
+        )
+        .await?;
     } else {
         let (req, ws_stream) = ServerBuilder::new().accept(stream).await?;
-        handle_websocket(req, ws_stream, addr, config, plugins, metrics, circuit_breaker, pool).await?;
+        handle_websocket(
+            req,
+            ws_stream,
+            addr,
+            config,
+            plugins,
+            metrics,
+            circuit_breaker,
+            pool,
+        )
+        .await?;
     }
 
     Ok(())
@@ -229,7 +293,6 @@ async fn handle_websocket<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-
     let version = if req.headers().contains_key("sec-websocket-protocol") {
         WispVersion::V2
     } else {
@@ -266,7 +329,8 @@ where
                 &server_extensions,
                 &motd,
                 config.buffer.initial_size,
-            ).await?;
+            )
+            .await?;
             ext
         }
     };
@@ -340,11 +404,12 @@ async fn run_metrics_server(
                 return;
             }
 
-            let is_metrics_request = request.starts_with("GET /metrics")
-                || request.starts_with("GET /metrics ");
+            let is_metrics_request =
+                request.starts_with("GET /metrics") || request.starts_with("GET /metrics ");
 
             if !is_metrics_request {
-                let response = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let response =
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 let _ = stream.write_all(response).await;
                 return;
             }

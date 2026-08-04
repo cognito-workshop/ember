@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use crate::wisp::plugin::{Plugin, PluginEvent, HookResult};
+use crate::wisp::plugin::{HookResult, Plugin, PluginEvent};
 
 /// Rate limiter plugin — limits connections per IP
 pub struct RateLimiter {
@@ -54,11 +54,14 @@ impl Plugin for RateLimiter {
                 if entry.0 > self.max_connections_per_ip {
                     tracing::warn!(
                         "Rate limit exceeded for {}: {} connections in {}s",
-                        ip, entry.0, self.window.as_secs()
+                        ip,
+                        entry.0,
+                        self.window.as_secs()
                     );
                     return HookResult::Reject(format!(
                         "Rate limit: {} connections per {}s",
-                        self.max_connections_per_ip, self.window.as_secs()
+                        self.max_connections_per_ip,
+                        self.window.as_secs()
                     ));
                 }
 
@@ -167,9 +170,12 @@ impl std::fmt::Display for MetricsSnapshot {
         write!(
             f,
             "conns={}/{} streams={}/{} bytes={}/{}",
-            self.connections_active, self.connections_total,
-            self.streams_active, self.streams_total,
-            self.bytes_in, self.bytes_out,
+            self.connections_active,
+            self.connections_total,
+            self.streams_active,
+            self.streams_total,
+            self.bytes_in,
+            self.bytes_out,
         )
     }
 }
@@ -220,13 +226,25 @@ impl Plugin for Logger {
                 tracing::info!("[plugin:logger] Connection open from {}", addr);
             }
             PluginEvent::HandshakeComplete { addr, version } => {
-                tracing::info!("[plugin:logger] Handshake complete with {} (v{})", addr, version);
+                tracing::info!(
+                    "[plugin:logger] Handshake complete with {} (v{})",
+                    addr,
+                    version
+                );
             }
-            PluginEvent::StreamOpen { stream_id, hostname, port, stream_type } => {
+            PluginEvent::StreamOpen {
+                stream_id,
+                hostname,
+                port,
+                stream_type,
+            } => {
                 let proto = if *stream_type == 0x01 { "TCP" } else { "UDP" };
                 tracing::info!(
                     "[plugin:logger] Stream {} opened: {}:{} ({})",
-                    stream_id, hostname, port, proto
+                    stream_id,
+                    hostname,
+                    port,
+                    proto
                 );
             }
             PluginEvent::StreamClose { stream_id } => {
@@ -236,7 +254,11 @@ impl Plugin for Logger {
                 tracing::info!("[plugin:logger] Connection closed from {}", addr);
             }
             PluginEvent::DataTransfer { stream_id, bytes } => {
-                tracing::trace!("[plugin:logger] Stream {} transferred {} bytes", stream_id, bytes);
+                tracing::trace!(
+                    "[plugin:logger] Stream {} transferred {} bytes",
+                    stream_id,
+                    bytes
+                );
             }
             PluginEvent::Shutdown => {
                 tracing::info!("[plugin:logger] Server shutting down");
