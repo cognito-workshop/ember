@@ -12,8 +12,35 @@ use crate::wisp::extensions::{Extension, ExtensionNegotiation};
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
-    let listener = TcpListener::bind(&addr).await?;
+    let listener = create_listener(&addr).await?;
     run_with_listener(listener, config).await
+}
+
+/// Create a TcpListener with SO_REUSEPORT on Linux (for thread-per-core mode)
+async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        // Use socket2 for SO_REUSEPORT on Linux
+        let socket_addr: SocketAddr = addr.parse()?;
+        let socket = socket2::Socket::new(
+            socket_addr.ip().into(),
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )?;
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?; // SO_REUSEPORT — allows multiple listeners on same port
+        socket.set_nonblocking(true)?;
+        socket.bind(&socket_addr.into())?;
+        socket.listen(64)?;
+        let std_listener: std::net::TcpListener = socket.into();
+        let listener = TcpListener::from_std(std_listener)?;
+        Ok(listener)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let listener = TcpListener::bind(addr).await?;
+        Ok(listener)
+    }
 }
 
 pub async fn run_with_listener(

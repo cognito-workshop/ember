@@ -96,6 +96,10 @@ pub struct Cli {
     /// Enable debug logging
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Use thread-per-core runtime (Linux only, requires SO_REUSEPORT)
+    #[arg(long)]
+    pub thread_per_core: bool,
 }
 
 fn default_host() -> String {

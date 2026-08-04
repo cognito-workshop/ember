@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "net"] }
 tokio-websockets = { version = "0.13", features = ["server", "client", "sha1_smol", "rand"] }
 bytes = "1"
 toml = "0.8"
@@ -19,6 +19,9 @@ rustc-hash = "2"
 flume = "0.11"
 http = "1"
 futures-util = { version = "0.3", features = ["sink"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+socket2 = "0.5"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
