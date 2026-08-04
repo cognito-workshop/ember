@@ -25,6 +25,8 @@ fn test_config() -> Config {
         },
         logging: LoggingConfig {
             level: "error".to_string(),
+            file: None,
+            max_size_mb: 100,
         },
         plugins: ember::config::PluginsConfig::default(),
     }

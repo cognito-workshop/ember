@@ -12,6 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_websockets::ServerBuilder;
 
 use crate::config::Config;
+use crate::tls::load_tls_config;
 use crate::wisp::handshake::{handshake_v2, perform_v1_init, WispVersion};
 use crate::wisp::mux::MuxInner;
 use crate::wisp::extensions::{Extension, ExtensionNegotiation};
@@ -89,6 +90,14 @@ pub async fn run_with_listener(
     let addr = listener.local_addr()?;
     tracing::info!("Ember listening on {}", addr);
 
+    // Create TLS acceptor if TLS is enabled
+    let tls_acceptor = if config.tls.enabled {
+        let tls_config = load_tls_config(&config.tls.cert_path, &config.tls.key_path)?;
+        Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(tls_config))))
+    } else {
+        None
+    };
+
     // Create shared metrics
     let metrics = Metrics::new();
 
@@ -135,9 +144,10 @@ pub async fn run_with_listener(
         let count = connection_count.clone();
         let plugins = plugins.clone();
         let metrics = metrics.clone();
+        let tls_acceptor = tls_acceptor.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config, plugins, metrics).await {
+            if let Err(e) = handle_connection(stream, addr, config, plugins, metrics, tls_acceptor).await {
                 tracing::error!("Connection error from {}: {}", addr, e);
             }
             count.fetch_sub(1, Ordering::Relaxed);
@@ -151,10 +161,33 @@ async fn handle_connection(
     config: Config,
     plugins: Arc<PluginManager>,
     metrics: Arc<Metrics>,
+    tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
 
-    let (req, mut ws_stream) = ServerBuilder::new().accept(stream).await?;
+    if let Some(acceptor) = tls_acceptor {
+        let tls_stream = acceptor.accept(stream).await?;
+        let (req, ws_stream) = ServerBuilder::new().accept(tls_stream).await?;
+        handle_websocket(req, ws_stream, addr, config, plugins, metrics).await?;
+    } else {
+        let (req, ws_stream) = ServerBuilder::new().accept(stream).await?;
+        handle_websocket(req, ws_stream, addr, config, plugins, metrics).await?;
+    }
+
+    Ok(())
+}
+
+async fn handle_websocket<S>(
+    req: http::Request<()>,
+    mut ws_stream: tokio_websockets::WebSocketStream<S>,
+    addr: SocketAddr,
+    config: Config,
+    plugins: Arc<PluginManager>,
+    metrics: Arc<Metrics>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
 
     let version = if req.headers().contains_key("sec-websocket-protocol") {
         WispVersion::V2
@@ -205,6 +238,7 @@ async fn handle_connection(
         plugins,
         addr,
         Some(metrics),
+        config.server.max_connections,
     );
     mux.run(ws_stream).await?;
 

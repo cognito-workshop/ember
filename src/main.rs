@@ -18,9 +18,22 @@ fn main() {
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.logging.level));
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+
+    match &config.logging.file {
+        Some(path) => {
+            let file_appender = tracing_appender::rolling::never(path, "ember.log");
+            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(non_blocking)
+                .init();
+        }
+        None => {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
+    }
 
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())

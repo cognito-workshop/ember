@@ -5,6 +5,7 @@ pub struct BufferConfig {
     pub max_size: u32,
     pub high_watermark: f64,
     pub low_watermark: f64,
+    pub max_buffer_bytes: usize,
 }
 
 impl Default for BufferConfig {
@@ -15,6 +16,7 @@ impl Default for BufferConfig {
             max_size: 1024,
             high_watermark: 0.8,
             low_watermark: 0.2,
+            max_buffer_bytes: 10 * 1024 * 1024,
         }
     }
 }
@@ -54,6 +56,11 @@ impl AdaptiveBuffer {
 
     #[inline]
     pub fn adapt(&mut self) {
+        // Estimate bytes: capacity * avg message size ~1KB
+        let estimated_bytes = self.capacity as usize * 1024;
+        if estimated_bytes >= self.config.max_buffer_bytes {
+            return;
+        }
         let usage = self.queued as f64 / self.capacity as f64;
         if usage > self.config.high_watermark {
             self.capacity = (self.capacity + 64).min(self.config.max_size);

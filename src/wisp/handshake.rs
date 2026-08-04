@@ -69,12 +69,15 @@ impl ClientInfo {
     }
 }
 
-pub async fn handshake_v2(
-    ws: &mut WebSocketStream<tokio::net::TcpStream>,
+pub async fn handshake_v2<S>(
+    ws: &mut WebSocketStream<S>,
     server_extensions: &[Extension],
     motd: &Option<String>,
     buffer_size: u32,
-) -> Result<(ExtensionNegotiation, WispVersion), WispError> {
+) -> Result<(ExtensionNegotiation, WispVersion), WispError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut ext_bytes = BytesMut::new();
     for ext in server_extensions {
         ext_bytes.put_u8(*ext as u8);
@@ -139,7 +142,10 @@ pub async fn handshake_v2(
     }
 }
 
-pub async fn perform_v1_init(ws: &mut WebSocketStream<tokio::net::TcpStream>, buffer_size: u32) -> Result<(), WispError> {
+pub async fn perform_v1_init<S>(ws: &mut WebSocketStream<S>, buffer_size: u32) -> Result<(), WispError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let continue_pkt = Packet::continue_packet(0, buffer_size);
     ws.send(Message::binary(continue_pkt.serialize())).await?;
     Ok(())

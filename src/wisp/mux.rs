@@ -5,7 +5,6 @@ use bytes::Bytes;
 use flume;
 use futures_util::{SinkExt, StreamExt};
 use rustc_hash::FxHashMap;
-use tokio::net::TcpStream;
 use tokio_websockets::{Message, WebSocketStream};
 
 use crate::error::WispError;
@@ -32,6 +31,7 @@ pub struct MuxInner {
     plugins: Arc<PluginManager>,
     peer_addr: SocketAddr,
     metrics: Option<Arc<Metrics>>,
+    max_streams: u32,
 }
 
 impl MuxInner {
@@ -43,6 +43,7 @@ impl MuxInner {
         plugins: Arc<PluginManager>,
         peer_addr: SocketAddr,
         metrics: Option<Arc<Metrics>>,
+        max_streams: u32,
     ) -> Self {
         let (ws_write_tx, _) = flume::unbounded();
 
@@ -56,10 +57,14 @@ impl MuxInner {
             plugins,
             peer_addr,
             metrics,
+            max_streams,
         }
     }
 
-    pub async fn run(&mut self, ws: WebSocketStream<TcpStream>) -> Result<(), WispError> {
+    pub async fn run<S>(&mut self, ws: tokio_websockets::WebSocketStream<S>) -> Result<(), WispError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         // Split into independent read/write halves
         let (mut ws_write, mut ws_read) = ws.split();
 
@@ -97,10 +102,13 @@ impl MuxInner {
     }
 
     #[inline(always)]
-    async fn read_loop(
+    async fn read_loop<S>(
         &mut self,
-        ws_read: &mut futures_util::stream::SplitStream<WebSocketStream<TcpStream>>,
-    ) -> Result<(), WispError> {
+        ws_read: &mut futures_util::stream::SplitStream<tokio_websockets::WebSocketStream<S>>,
+    ) -> Result<(), WispError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         loop {
             let msg = match ws_read.next().await {
                 Some(Ok(msg)) => msg,
@@ -151,6 +159,12 @@ impl MuxInner {
 
     /// Raw connect handler — takes bytes directly, avoids Packet struct
     async fn handle_connect_raw(&mut self, stream_id: StreamId, payload: Bytes) -> Result<(), WispError> {
+        // Secondary stream count check
+        if self.streams.len() as u32 >= self.max_streams {
+            self.send_close(stream_id, 0x45)?;
+            return Err(WispError::ConnectionLimitReached);
+        }
+
         if payload.len() < 3 {
             self.send_close(stream_id, 0x41)?;
             return Err(WispError::PacketTooShort(payload.len()));
@@ -207,27 +221,36 @@ impl MuxInner {
         } else {
             // TCP
             tokio::spawn(async move {
-                match crate::proxy::tcp::proxy_tcp_connect(hostname, port).await {
-                    Ok(tcp_stream) => {
-                        if let Some(motd_text) = motd {
-                            tracing::debug!("MOTD: {}", motd_text);
-                        }
-                        let continue_pkt = Packet::continue_packet(stream_id, 128);
-                        let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                        if let Err(e) = crate::proxy::tcp::proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
-                            tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                let max_retries = 3;
+                let mut attempts = 0;
+                let tcp_stream = loop {
+                    match crate::proxy::tcp::proxy_tcp_connect(hostname.clone(), port).await {
+                        Ok(stream) => break stream,
+                        Err(e) => {
+                            attempts += 1;
+                            if attempts >= max_retries {
+                                tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
+                                let reason = match e {
+                                    WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                                    WispError::Io(_) => 0x42,
+                                    _ => 0x41,
+                                };
+                                let packet = Packet::close(stream_id, reason);
+                                let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                return;
+                            }
+                            tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
+                            tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("TCP connect failed for stream {}: {}", stream_id, e);
-                        let reason = match e {
-                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
-                            WispError::Io(_) => 0x42,
-                            _ => 0x41,
-                        };
-                        let packet = Packet::close(stream_id, reason);
-                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
-                    }
+                };
+                if let Some(motd_text) = motd {
+                    tracing::debug!("MOTD: {}", motd_text);
+                }
+                let continue_pkt = Packet::continue_packet(stream_id, 128);
+                let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
+                if let Err(e) = crate::proxy::tcp::proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
+                    tracing::trace!("proxy error for stream {}: {}", stream_id, e);
                 }
             });
         }
@@ -236,6 +259,12 @@ impl MuxInner {
     }
 
     async fn handle_connect(&mut self, packet: Packet) -> Result<(), WispError> {
+        // Secondary stream count check
+        if self.streams.len() as u32 >= self.max_streams {
+            self.send_close(packet.stream_id, 0x45)?;
+            return Err(WispError::ConnectionLimitReached);
+        }
+
         if packet.payload.len() < 3 {
             self.send_close(packet.stream_id, 0x41)?;
             return Err(WispError::PacketTooShort(packet.payload.len()));
@@ -305,27 +334,36 @@ impl MuxInner {
         } else {
             // TCP proxy
             tokio::spawn(async move {
-                match proxy_tcp_connect(hostname, port).await {
-                    Ok(tcp_stream) => {
-                        if let Some(motd_text) = motd {
-                            tracing::debug!("MOTD: {}", motd_text);
-                        }
-                        let continue_pkt = Packet::continue_packet(stream_id, 128);
-                        let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
-                        if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
-                            tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                let max_retries = 3;
+                let mut attempts = 0;
+                let tcp_stream = loop {
+                    match proxy_tcp_connect(hostname.clone(), port).await {
+                        Ok(stream) => break stream,
+                        Err(e) => {
+                            attempts += 1;
+                            if attempts >= max_retries {
+                                tracing::error!("TCP connect failed for stream {} after {} attempts: {}", stream_id, attempts, e);
+                                let reason = match e {
+                                    WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                                    WispError::Io(_) => 0x42,
+                                    _ => 0x41,
+                                };
+                                let packet = Packet::close(stream_id, reason);
+                                let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                                return;
+                            }
+                            tracing::debug!("TCP connect attempt {} failed for stream {}, retrying: {}", attempts, stream_id, e);
+                            tokio::time::sleep(std::time::Duration::from_millis(100 * attempts as u64)).await;
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("TCP connect failed for stream {}: {}", stream_id, e);
-                        let reason = match e {
-                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
-                            WispError::Io(_) => 0x42,
-                            _ => 0x41,
-                        };
-                        let packet = Packet::close(stream_id, reason);
-                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
-                    }
+                };
+                if let Some(motd_text) = motd {
+                    tracing::debug!("MOTD: {}", motd_text);
+                }
+                let continue_pkt = Packet::continue_packet(stream_id, 128);
+                let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
+                if let Err(e) = proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
+                    tracing::trace!("proxy error for stream {}: {}", stream_id, e);
                 }
             });
         }

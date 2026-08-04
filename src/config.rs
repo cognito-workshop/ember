@@ -68,6 +68,8 @@ pub struct BufferConfig {
     pub low_watermark: f64,
     #[serde(default = "default_tcp_read_size")]
     pub tcp_read_size: usize,
+    #[serde(default = "default_max_buffer_bytes")]
+    pub max_buffer_bytes: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -84,6 +86,10 @@ pub struct ExtensionsConfig {
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default = "default_max_size_mb")]
+    pub max_size_mb: u64,
 }
 
 #[derive(clap::Parser, Debug)]
@@ -167,6 +173,12 @@ fn default_motd() -> String {
 fn default_log_level() -> String {
     "info".to_string()
 }
+fn default_max_size_mb() -> u64 {
+    100
+}
+fn default_max_buffer_bytes() -> usize {
+    10 * 1024 * 1024
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -211,6 +223,7 @@ impl Default for BufferConfig {
             high_watermark: default_high_watermark(),
             low_watermark: default_low_watermark(),
             tcp_read_size: default_tcp_read_size(),
+            max_buffer_bytes: default_max_buffer_bytes(),
         }
     }
 }
@@ -238,6 +251,8 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             level: default_log_level(),
+            file: None,
+            max_size_mb: default_max_size_mb(),
         }
     }
 }
@@ -250,6 +265,7 @@ impl From<BufferConfig> for RuntimeBufferConfig {
             max_size: cfg.max_size,
             high_watermark: cfg.high_watermark,
             low_watermark: cfg.low_watermark,
+            max_buffer_bytes: cfg.max_buffer_bytes,
         }
     }
 }
