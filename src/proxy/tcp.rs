@@ -1,14 +1,14 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use flume::{Receiver, Sender};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_websockets::Message;
 
 use crate::error::WispError;
-use crate::wisp::packet::Packet;
+use crate::wisp::packet::{Packet, PacketType};
 use crate::wisp::plugins::Metrics;
 
 /// Optimize TCP socket for high-throughput proxying
@@ -20,37 +20,35 @@ fn optimize_tcp_socket(stream: &TcpStream) {
         use std::os::fd::AsRawFd;
         unsafe {
             let fd = stream.as_raw_fd();
-
-            // Enable TCP keepalive
             let one: libc::c_int = 1;
             libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_KEEPALIVE,
+                fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE,
                 &one as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
-
-            // Set larger send buffer (256KB)
             let buf_size: libc::c_int = 256 * 1024;
             libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_SNDBUF,
+                fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
                 &buf_size as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
-
-            // Set larger receive buffer (256KB)
             libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_RCVBUF,
+                fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
                 &buf_size as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
         }
     }
+}
+
+/// Inline serialization — avoids Packet struct creation
+#[inline(always)]
+fn make_data_msg(stream_id: u32, payload: Bytes) -> Message {
+    let mut buf = BytesMut::with_capacity(5 + payload.len());
+    buf.put_u8(PacketType::Data as u8);
+    buf.put_u32_le(stream_id);
+    buf.put_slice(&payload);
+    Message::binary(buf.freeze())
 }
 
 pub async fn proxy_tcp(
@@ -61,7 +59,6 @@ pub async fn proxy_tcp(
     buffer_size: usize,
     metrics: Option<Arc<Metrics>>,
 ) -> Result<(), WispError> {
-    // Optimize the upstream TCP socket
     optimize_tcp_socket(&tcp_stream);
 
     let (tcp_read, mut tcp_write) = tcp_stream.into_split();
@@ -74,11 +71,10 @@ pub async fn proxy_tcp(
             result = reader.read_buf(&mut buf) => {
                 match result {
                     Ok(0) => break,
-                    Ok(_) => {
+                    Ok(n) => {
                         let payload = buf.split().freeze();
-                        let n = payload.len();
-                        let packet = Packet::data(stream_id, payload);
-                        if ws_write_tx.send(Message::binary(packet.serialize())).is_err() {
+                        let msg = make_data_msg(stream_id, payload);
+                        if ws_write_tx.send(msg).is_err() {
                             break;
                         }
                         if let Some(ref m) = metrics {

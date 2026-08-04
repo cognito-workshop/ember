@@ -96,6 +96,7 @@ impl MuxInner {
         result
     }
 
+    #[inline(always)]
     async fn read_loop(
         &mut self,
         ws_read: &mut futures_util::stream::SplitStream<WebSocketStream<TcpStream>>,
@@ -107,41 +108,131 @@ impl MuxInner {
                 None => return Ok(()),
             };
 
-            if msg.is_close() {
-                return Ok(());
-            }
-
-            if !msg.is_binary() {
+            if msg.is_close() || !msg.is_binary() {
+                if msg.is_close() { return Ok(()); }
                 continue;
             }
 
             let payload: Bytes = msg.into_payload().into();
-            let packet = Packet::parse(payload)?;
 
-            match packet.packet_type {
-                PacketType::Connect => {
-                    if let Err(e) = self.handle_connect(packet).await {
+            // Inline packet parsing — avoid Packet struct for DATA (hot path)
+            if payload.len() < 5 {
+                continue;
+            }
+
+            let packet_type = payload[0];
+            let stream_id = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+            let data = payload.slice(5..);
+
+            match packet_type {
+                0x01 => {
+                    // CONNECT
+                    if let Err(e) = self.handle_connect_raw(stream_id, data).await {
                         tracing::error!("connect error: {}", e);
                     }
                 }
-                PacketType::Data => {
-                    if let Err(e) = self.handle_data(packet) {
-                        tracing::trace!("data error: {}", e);
+                0x02 => {
+                    // DATA — inline hot path
+                    if let Some(entry) = self.streams.get(&stream_id) {
+                        let _ = entry.sender.try_send(data);
                     }
                 }
-                PacketType::Continue => {
-                    if let Err(e) = self.handle_continue(packet.stream_id) {
-                        tracing::trace!("continue error: {}", e);
-                    }
+                0x03 => {
+                    // CONTINUE — no-op for now
                 }
-                PacketType::Close => {
-                    self.handle_close(packet.stream_id);
+                0x04 => {
+                    // CLOSE
+                    self.handle_close(stream_id);
                 }
-                PacketType::Info => {
-                    unreachable!("INFO handled during handshake");
-                }
+                _ => {}
             }
         }
+    }
+
+    /// Raw connect handler — takes bytes directly, avoids Packet struct
+    async fn handle_connect_raw(&mut self, stream_id: StreamId, payload: Bytes) -> Result<(), WispError> {
+        if payload.len() < 3 {
+            self.send_close(stream_id, 0x41)?;
+            return Err(WispError::PacketTooShort(payload.len()));
+        }
+
+        let stream_type = payload[0];
+        let port = u16::from_le_bytes([payload[1], payload[2]]);
+        let hostname = String::from_utf8_lossy(&payload[3..]).to_string();
+
+        if stream_type != 0x01 && stream_type != 0x02 {
+            self.send_close(stream_id, 0x41)?;
+            return Err(WispError::InvalidStreamType(stream_type));
+        }
+
+        // Notify plugins
+        let event = PluginEvent::StreamOpen {
+            stream_id,
+            hostname: hostname.clone(),
+            port,
+            stream_type,
+        };
+        if let Err(reason) = self.plugins.notify(&event).await {
+            self.send_close(stream_id, 0x48)?;
+            return Err(WispError::WebSocket(reason));
+        }
+
+        let (data_tx, data_rx) = flume::bounded(self.buffer_config.initial_size as usize);
+        let buffer = AdaptiveBuffer::new(self.buffer_config.clone());
+
+        self.streams.insert(stream_id, StreamEntry { sender: data_tx, buffer });
+
+        let ws_write_tx = self.ws_write_tx.clone();
+        let tcp_read_size = self.tcp_read_size;
+        let motd = self.motd.clone();
+        let metrics = self.metrics.clone();
+
+        if stream_type == 0x02 {
+            // UDP
+            let upstream_addr = format!("{}:{}", hostname, port);
+            tokio::spawn(async move {
+                let addr: std::net::SocketAddr = match upstream_addr.parse() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::error!("Invalid UDP address {}: {}", upstream_addr, e);
+                        let packet = Packet::close(stream_id, 0x41);
+                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                        return;
+                    }
+                };
+                if let Err(e) = crate::proxy::udp::proxy_udp(stream_id, addr, data_rx, ws_write_tx).await {
+                    tracing::trace!("UDP proxy error for stream {}: {}", stream_id, e);
+                }
+            });
+        } else {
+            // TCP
+            tokio::spawn(async move {
+                match crate::proxy::tcp::proxy_tcp_connect(hostname, port).await {
+                    Ok(tcp_stream) => {
+                        if let Some(motd_text) = motd {
+                            tracing::debug!("MOTD: {}", motd_text);
+                        }
+                        let continue_pkt = Packet::continue_packet(stream_id, 128);
+                        let _ = ws_write_tx.send(Message::binary(continue_pkt.serialize()));
+                        if let Err(e) = crate::proxy::tcp::proxy_tcp(stream_id, tcp_stream, data_rx, ws_write_tx, tcp_read_size, metrics).await {
+                            tracing::trace!("proxy error for stream {}: {}", stream_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("TCP connect failed for stream {}: {}", stream_id, e);
+                        let reason = match e {
+                            WispError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::ConnectionRefused => 0x44,
+                            WispError::Io(_) => 0x42,
+                            _ => 0x41,
+                        };
+                        let packet = Packet::close(stream_id, reason);
+                        let _ = ws_write_tx.send(Message::binary(packet.serialize()));
+                    }
+                }
+            });
+        }
+
+        Ok(())
     }
 
     async fn handle_connect(&mut self, packet: Packet) -> Result<(), WispError> {
