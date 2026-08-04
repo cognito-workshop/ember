@@ -1,3 +1,6 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use bytes::Bytes;
 use flume;
 use futures_util::{SinkExt, StreamExt};
@@ -10,6 +13,7 @@ use crate::proxy::tcp::{proxy_tcp, proxy_tcp_connect};
 use crate::wisp::buffer::{AdaptiveBuffer, BufferConfig};
 use crate::wisp::extensions::ExtensionNegotiation;
 use crate::wisp::packet::{Packet, PacketType, StreamId};
+use crate::wisp::plugin::{PluginEvent, PluginManager};
 
 pub struct StreamEntry {
     pub sender: flume::Sender<Bytes>,
@@ -23,6 +27,8 @@ pub struct MuxInner {
     extensions: ExtensionNegotiation,
     motd: Option<String>,
     tcp_read_size: usize,
+    plugins: Arc<PluginManager>,
+    peer_addr: SocketAddr,
 }
 
 impl MuxInner {
@@ -31,6 +37,8 @@ impl MuxInner {
         extensions: ExtensionNegotiation,
         motd: Option<String>,
         tcp_read_size: usize,
+        plugins: Arc<PluginManager>,
+        peer_addr: SocketAddr,
     ) -> Self {
         let (ws_write_tx, _) = flume::unbounded();
 
@@ -41,6 +49,8 @@ impl MuxInner {
             extensions,
             motd,
             tcp_read_size,
+            plugins,
+            peer_addr,
         }
     }
 
@@ -51,6 +61,11 @@ impl MuxInner {
         // Channel for proxy tasks to send WS messages
         let (ws_write_tx, ws_write_rx) = flume::unbounded::<Message>();
         self.ws_write_tx = ws_write_tx;
+
+        // Notify plugins: connection open
+        let _ = self.plugins.notify(&PluginEvent::ConnectionOpen {
+            addr: self.peer_addr,
+        }).await;
 
         // Spawn a dedicated writer task
         let writer_handle = tokio::spawn(async move {
@@ -63,6 +78,11 @@ impl MuxInner {
 
         // Main read loop
         let result = self.read_loop(&mut ws_read).await;
+
+        // Notify plugins: connection close
+        let _ = self.plugins.notify(&PluginEvent::ConnectionClose {
+            addr: self.peer_addr,
+        }).await;
 
         // Close channel to signal writer to exit
         drop(std::mem::replace(&mut self.ws_write_tx, flume::unbounded().0));
@@ -134,6 +154,18 @@ impl MuxInner {
             return Err(WispError::InvalidStreamType(stream_type));
         }
 
+        // Notify plugins: stream open
+        let event = PluginEvent::StreamOpen {
+            stream_id: packet.stream_id,
+            hostname: hostname.clone(),
+            port,
+            stream_type,
+        };
+        if let Err(reason) = self.plugins.notify(&event).await {
+            self.send_close(packet.stream_id, 0x48)?;
+            return Err(WispError::WebSocket(reason));
+        }
+
         let (data_tx, data_rx) = flume::bounded(self.buffer_config.initial_size as usize);
         let buffer = AdaptiveBuffer::new(self.buffer_config.clone());
 
@@ -191,6 +223,14 @@ impl MuxInner {
 
     fn handle_close(&mut self, stream_id: StreamId) {
         self.streams.remove(&stream_id);
+
+        // Notify plugins: stream close
+        let plugins = self.plugins.clone();
+        let stream_id_copy = stream_id;
+        tokio::spawn(async move {
+            let _ = plugins.notify(&PluginEvent::StreamClose { stream_id: stream_id_copy }).await;
+        });
+
         tracing::trace!("stream {} closed", stream_id);
     }
 

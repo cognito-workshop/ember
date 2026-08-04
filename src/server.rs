@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::wisp::handshake::{handshake_v2, perform_v1_init, WispVersion};
 use crate::wisp::mux::MuxInner;
 use crate::wisp::extensions::{Extension, ExtensionNegotiation};
+use crate::wisp::plugin::PluginManager;
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -36,7 +37,6 @@ async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::
             libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
             libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &one as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
 
-            // Convert SocketAddr to sockaddrStorage for safe casting
             let mut storage: libc::sockaddr_storage = std::mem::zeroed();
             let (addr_ptr, addr_len) = match socket_addr {
                 SocketAddr::V4(ref a) => {
@@ -85,6 +85,10 @@ pub async fn run_with_listener(
     let addr = listener.local_addr()?;
     tracing::info!("Ember listening on {}", addr);
 
+    // Create shared plugin manager
+    let plugins = Arc::new(PluginManager::new());
+    plugins.load_all().await?;
+
     let connection_count = Arc::new(AtomicU32::new(0));
 
     loop {
@@ -100,9 +104,10 @@ pub async fn run_with_listener(
 
         let config = config.clone();
         let count = connection_count.clone();
+        let plugins = plugins.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config).await {
+            if let Err(e) = handle_connection(stream, addr, config, plugins).await {
                 tracing::error!("Connection error from {}: {}", addr, e);
             }
             count.fetch_sub(1, Ordering::Relaxed);
@@ -114,6 +119,7 @@ async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
     config: Config,
+    plugins: Arc<PluginManager>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
 
@@ -165,6 +171,8 @@ async fn handle_connection(
         extensions,
         motd,
         config.buffer.tcp_read_size,
+        plugins,
+        addr,
     );
     mux.run(ws_stream).await?;
 
