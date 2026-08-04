@@ -41,7 +41,7 @@ fn optimize_tcp_socket(stream: &TcpStream) {
     }
 }
 
-/// Inline serialization — avoids Packet struct creation
+/// Inline serialization — avoids Packet struct
 #[inline(always)]
 fn make_data_msg(stream_id: u32, payload: Bytes) -> Message {
     let mut buf = BytesMut::with_capacity(5 + payload.len());
