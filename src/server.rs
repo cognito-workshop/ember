@@ -20,19 +20,24 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 async fn create_listener(addr: &str) -> Result<TcpListener, Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     {
-        // Use socket2 for SO_REUSEPORT on Linux
+        // Use libc for SO_REUSEPORT on Linux to avoid socket2 version conflicts
         let socket_addr: SocketAddr = addr.parse()?;
-        let socket = socket2::Socket::new(
-            socket_addr.ip().into(),
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
-        socket.set_reuse_address(true)?;
-        socket.set_reuse_port(true)?; // SO_REUSEPORT — allows multiple listeners on same port
-        socket.set_nonblocking(true)?;
-        socket.bind(&socket_addr.into())?;
-        socket.listen(64)?;
-        let std_listener: std::net::TcpListener = socket.into();
+        let std_listener = std::net::TcpListener::bind(&socket_addr)?;
+        std_listener.set_nonblocking(true)?;
+
+        // Set SO_REUSEPORT via libc
+        unsafe {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&std_listener);
+            let one: libc::c_int = 1;
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEPORT,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+        }
+
         let listener = TcpListener::from_std(std_listener)?;
         Ok(listener)
     }
