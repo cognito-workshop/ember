@@ -1,1 +1,14 @@
-/target
+.venv
+*node_modules
+*package-lock.json
+/server/crystal/git
+/server/python
+/server/rust
+/server/cpp
+/server/go
+/client/crystal/git
+/client/crystal/demo
+/client/rust
+/echo
+/log
+wispmark-results.md
